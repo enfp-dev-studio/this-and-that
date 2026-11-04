@@ -97,7 +97,7 @@ const jobs = new Map<string, Job>();
 
 // Experiments, each switchable per request (body.opts) or by env default.
 type Opts = { instant: boolean; speculate: boolean };
-const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1' };
+const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE !== '0' };
 
 async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts) {
   const dir = join(jobsDir, job.id);

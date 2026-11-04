@@ -143,13 +143,13 @@ export async function segmentMarks(image: Buffer, strokes: Stroke[], trace?: Tra
 
 // The mark itself as a filled region (its bounding box as an ellipse), for
 // marks SAM returned nothing for, and for arrows whose path matters too.
-export function strokeMask(s: Stroke, width: number, height: number, scale: number): Mask {
+export function strokeMask(s: Stroke, width: number, height: number, scale: number, minRadius = 12): Mask {
   const b = strokeBox(s);
   const pad = 0.15;
   const cx = ((b.left + b.right) / 2) * scale;
   const cy = ((b.top + b.bottom) / 2) * scale;
-  const rx = Math.max(12, ((b.right - b.left) / 2) * scale * (1 + pad));
-  const ry = Math.max(12, ((b.bottom - b.top) / 2) * scale * (1 + pad));
+  const rx = Math.max(minRadius, ((b.right - b.left) / 2) * scale * (1 + pad));
+  const ry = Math.max(minRadius, ((b.bottom - b.top) / 2) * scale * (1 + pad));
   const data = new Uint8Array(width * height);
   for (let y = Math.max(0, Math.floor(cy - ry)); y < Math.min(height, cy + ry); y++)
     for (let x = Math.max(0, Math.floor(cx - rx)); x < Math.min(width, cx + rx); x++)
@@ -183,9 +183,10 @@ export async function pasteMarked(image: Buffer, edited: Buffer, strokes: Stroke
   for (const s of strokes) {
     const e = edits.find((e) => e.mark === s.mark);
     if (!e || /^no change/i.test(e.instruction)) continue;
-    // A pointer's own area may be where something moves to: paste around the stroke.
-    const m = e.kind === 'pointer' ? undefined : seg.masks.get(s.mark);
-    regions.push(m ?? strokeMask(s, seg.width, seg.height, scale));
+    // A pointer's own area may be where something moves to: paste around the
+    // stroke, at least 12% of the image wide, so a moved object isn't cut off.
+    if (e.kind === 'pointer') regions.push(strokeMask(s, seg.width, seg.height, scale, 0.12 * Math.max(seg.width, seg.height)));
+    else regions.push(seg.masks.get(s.mark) ?? strokeMask(s, seg.width, seg.height, scale));
   }
   if (!regions.length) return { out: await sharp(image).png().toBuffer(), alpha: Buffer.alloc(width! * height!) };
   const side = Math.max(width!, height!);
