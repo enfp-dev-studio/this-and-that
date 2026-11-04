@@ -78,9 +78,15 @@ export async function metaFetch(path: string, init: RequestInit = {}) {
 export type Config = { passcode: boolean; limits: { maxMarks: number; maxRecordingSeconds: number; maxImageSide: number }; jobs?: { used: number; cap: number } };
 const DEFAULT_CONFIG: Config = { passcode: false, limits: { maxMarks: 6, maxRecordingSeconds: 20, maxImageSide: 2048 } };
 let config: Config = DEFAULT_CONFIG;
-export const configLoaded = fetch(`${API}/config`)
-  .then((r) => (r.ok ? r.json() : DEFAULT_CONFIG))
-  .then((c: Config) => (config = { ...DEFAULT_CONFIG, ...c, limits: { ...DEFAULT_CONFIG.limits, ...c.limits } }), () => config);
+// `reachable` false: the Worker didn't answer (wrong VITE_API_BASE, or this
+// origin missing from its ALLOWED_ORIGINS), so nothing will work.
+export const configLoaded: Promise<Config & { reachable: boolean }> = fetch(`${API}/config`)
+  .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+  .then(
+    (c: Config) => ({ ...(config = { ...DEFAULT_CONFIG, ...c, limits: { ...DEFAULT_CONFIG.limits, ...c.limits } }), reachable: true }),
+    () => ({ ...config, reachable: false }),
+  );
+export const apiUrl = API;
 export const limits = () => config.limits;
 
 // One take (an edit, a 3D build, a paint) counts against the free daily jobs.

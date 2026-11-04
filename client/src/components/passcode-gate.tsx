@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { checkPasscode, configLoaded, getPasscode, onLimit, onPasscodeNeeded, setPasscode } from '@/runtime/meta';
+import { apiUrl, checkPasscode, configLoaded, getPasscode, onLimit, onPasscodeNeeded, setPasscode } from '@/runtime/meta';
 
 // Today's free jobs are used up: said on load and whenever a take is refused.
 const quotaToast = (message = "It resets at 09:00 KST (00:00 UTC).") =>
@@ -20,6 +20,7 @@ export function PasscodeGate() {
 
   useEffect(() => {
     configLoaded.then((c) => {
+      if (!c.reachable) return void toast.error("Can't reach the editing service", { id: 'unreachable', description: `${apiUrl} didn't answer. Check the connection and reload.`, duration: 15_000 });
       if (c.passcode) checkPasscode().then((ok) => !ok && setOpen(true), () => setOpen(true));
       if (c.jobs && c.jobs.used >= c.jobs.cap) quotaToast();
     });
