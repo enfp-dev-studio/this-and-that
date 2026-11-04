@@ -382,12 +382,18 @@ async function sceneHold(page: Page, rec: Recorder) {
 // app's replay harness (drawGuides: pen events from a view; make: the words),
 // the voice laid in by edit-demo.ts where each line starts.
 const HELMET = {
+  // A great helm: the outline with a rim, the eye slits and the centre ridge from the front; the profile with the slit from the side.
   front: [
-    [[-0.17, 0.03, 0], [-0.185, 0.2, 0], [-0.15, 0.34, 0], [-0.08, 0.42, 0], [0, 0.445, 0], [0.08, 0.42, 0], [0.15, 0.34, 0], [0.185, 0.2, 0], [0.17, 0.03, 0]],
-    [[-0.13, 0.24, 0], [0.13, 0.24, 0]],
-    [[0, 0.27, 0], [0, 0.08, 0]],
+    [[-0.17, 0.02, 0], [-0.18, 0.3, 0], [-0.14, 0.4, 0], [-0.07, 0.45, 0], [0, 0.46, 0], [0.07, 0.45, 0], [0.14, 0.4, 0], [0.18, 0.3, 0], [0.17, 0.02, 0]],
+    [[-0.17, 0.06, 0], [0.17, 0.06, 0]],
+    [[-0.13, 0.27, 0], [-0.03, 0.27, 0]],
+    [[0.03, 0.27, 0], [0.13, 0.27, 0]],
+    [[0, 0.44, 0], [0, 0.07, 0]],
   ],
-  side: [[[0, 0.03, 0.17], [0, 0.2, 0.19], [0, 0.33, 0.16], [0, 0.42, 0.08], [0, 0.445, 0], [0, 0.42, -0.09], [0, 0.32, -0.17], [0, 0.18, -0.2], [0, 0.03, -0.19]]],
+  side: [
+    [[0, 0.02, 0.17], [0, 0.2, 0.19], [0, 0.33, 0.16], [0, 0.42, 0.08], [0, 0.46, 0], [0, 0.43, -0.09], [0, 0.33, -0.17], [0, 0.18, -0.2], [0, 0.02, -0.19]],
+    [[0, 0.27, 0.19], [0, 0.27, 0.06]],
+  ],
   // Started just off the dome, so they are drawn facing the camera (not on its steep side).
   horns: [-1, 1].map((k) => [[0.17, 0.38], [0.24, 0.44], [0.31, 0.53], [0.33, 0.64], [0.29, 0.73]].map(([x, y]) => [k * x, y, 0])),
   // A bat wing from the side of the helmet, back and up: three pointed tips, scallops between.

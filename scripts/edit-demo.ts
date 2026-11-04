@@ -430,6 +430,38 @@ async function compareCard(seconds: number) {
   console.log(`compare: ${dur(out).toFixed(1)} s`);
 }
 
+// The proof of a detail edit: a close-up from the full-size pictures around
+// the mark, the original with the stroke drawn on it, then the result (with
+// the time the edit took), crossfaded.
+async function closeUp(name: string, image: string) {
+  const t = timing(name);
+  const strokes = JSON.parse(readFileSync(join(demo, 'clips', `${name}.json`), 'utf8')).strokes as { points: { x: number; y: number }[] }[];
+  const pts = strokes.flatMap((st) => st.points);
+  const [nw, nh] = size(image);
+  const [x0, x1, y0, y1] = [Math.min(...pts.map((p) => p.x)), Math.max(...pts.map((p) => p.x)), Math.min(...pts.map((p) => p.y)), Math.max(...pts.map((p) => p.y))];
+  let h = Math.max(240, (y1 - y0) * 3), w = (h * 16) / 9;
+  if (w > nw) (w = nw), (h = (w * 9) / 16);
+  const left = Math.round(Math.min(nw - w, Math.max(0, (x0 + x1) / 2 - w / 2))), top = Math.round(Math.min(nh - h, Math.max(0, (y0 + y1) / 2 - h / 2)));
+  const region = { left, top, width: Math.round(w), height: Math.round(h) };
+  const k = W / region.width;
+  const tag = (text: string) => `<rect x="40" y="40" width="${40 + text.length * 22}" height="64" rx="12" fill="#000" fill-opacity="0.72"/><text x="60" y="84" font-family="${FONT}" font-size="36" font-weight="600" fill="#fff">${esc(text)}</text>`;
+  const outline = strokes.map((st) => `<polyline points="${st.points.map((p) => `${((p.x - left) * k).toFixed(1)},${((p.y - top) * k).toFixed(1)}`).join(' ')}" fill="none" stroke="${MARK[0]}" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+  const waitPng = join(work, `wait-close-${name}.png`);
+  const { w: ww } = await waitLabel(t.result - t.release, waitPng);
+  const still = async (file: string, overlay: string, extra: OverlayOptions[], out: string) => {
+    const full = await sharp(file).resize(nw, nh, { fit: 'fill' }).toBuffer();
+    const base = await sharp(await sharp(full).extract(region).toBuffer()).resize(W, H).toBuffer();
+    await sharp(base).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${overlay}</svg>`) }, ...extra]).png().toFile(out);
+  };
+  const before = join(work, `close-${name}-before.png`), after = join(work, `close-${name}-after.png`);
+  await still(image, outline + tag('Before'), [], before);
+  await still(join(demo, `${name}.result.png`), tag('After'), [{ input: waitPng, left: Math.round((W - ww) / 2), top: 44 }], after);
+  const out = join(work, `${String(seq++).padStart(2, '0')}-close-${name}.mp4`);
+  ff(['-loop', '1', '-t', '1.4', '-i', before, '-loop', '1', '-t', '2.0', '-i', after, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-filter_complex', '[0:v]fps=30,format=yuv420p[a];[1:v]fps=30,format=yuv420p[b];[a][b]xfade=transition=fade:duration=0.5:offset=0.9[out]', '-map', '[out]', '-map', '2:a', ...ENC, '-t', '2.9', out]);
+  parts.push(out);
+  console.log(`close-up ${name}: ${region.width}×${region.height} px at ${left},${top} (×${(W / region.width).toFixed(1)} of the picture)`);
+}
+
 // ---------- the cut (DEMO.md) ----------
 
 const gray = '#a1a1aa';
@@ -437,20 +469,27 @@ const LINE = ['Complex edits, asked simply:', 'draw and talk at the same time.']
 // 0:00 the hook: the strongest detail edit that passed (a teardrop drawn on the gem), then the line and the problem
 const illust = (f: string) => join(root, 'samples', 'illust', f);
 const opener = accepted('gem') ? 'gem' : null;
-if (opener) await clip(opener, await pointing(opener, illust('armor.jpg'), plan2d(opener, illust('armor.jpg'), false, 1.6), []));
+if (opener) {
+  await clip(opener, await pointing(opener, illust('armor.jpg'), plan2d(opener, illust('armor.jpg'), false, 1.6), []));
+  await closeUp(opener, illust('armor.jpg'));
+}
 await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 4);
 await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { text: 'The last 10% is details, and words can’t point.', size: 52, color: gray }], 4);
 // simple to complex: one tap, then edits where the stroke is the shape and the
 // place (only those that passed the acceptance check), three in one breath, 3D
 await macaronBeat();
-const takes = [['clip', 'armor.jpg'], ['cameo', 'gothic.jpg'], ['hairpin', 'gothic.jpg'], ['hook', 'armor.jpg'], ['emblem', 'armor.jpg']];
-for (const [name, image] of takes) if (name !== opener && accepted(name)) await clip(name, await pointing(name, illust(image), plan2d(name, illust(image), false, 1.6), []));
+// (The cameo passed the check, but Spark's callout read "Recolor the cameo", not the shape asked for: left out.)
+const takes = [['clip', 'armor.jpg'], ['hairpin', 'gothic.jpg'], ['hook', 'armor.jpg'], ['emblem', 'armor.jpg']];
+for (const [name, image] of takes) {
+  if (name === opener || !accepted(name)) continue;
+  await clip(name, await pointing(name, illust(image), plan2d(name, illust(image), false, 1.6), []));
+  await closeUp(name, illust(image));
+}
 if (accepted('three')) {
   await clip('three', await pointing('three', illust('keyvisual.jpg'), plan2d('three', illust('keyvisual.jpg')), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
   // One before/after toggle: before (held), then after again.
   await clip('hold', { real: 99, fastUntil: 99, segs: [{ from: 1.25, to: 3.9 }], subs: [] });
 }
-await card([{ text: 'Only what you marked changes.', size: 72, weight: 600 }], 3);
 // the evidence
 await card(
   [
@@ -458,7 +497,7 @@ await card(
     { text: 'This & That: 0.6%.', size: 46, weight: 600, gap: 10 },
     { text: 'What changed: text-only (left) vs This & That (right), removing one fire hydrant', size: 30, color: gray },
   ],
-  7,
+  5,
   { file: join(root, 'out', 'bench-hard', 'diff-street.jpg'), width: 1500 },
 );
 // how it works
