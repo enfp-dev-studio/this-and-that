@@ -81,7 +81,7 @@ export class Sketch {
 
   constructor(private stage: Stage) {
     this.planeViz = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.6, 2.6),
+      new THREE.PlaneGeometry(1.8, 1.8),
       new THREE.MeshBasicMaterial({ map: gridTexture(), transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 }),
     );
     this.planeViz.renderOrder = -1;
@@ -184,7 +184,7 @@ export class Sketch {
       screen: [new THREE.Vector2(e.clientX, e.clientY)],
       stroke: { id: this.nextId++, points: [p], times: [Date.now()], plane: surface ? 'surface' : this.mode, normal: plane.normal.clone(), viewDir, closed: false, round: this.round, line: null },
     };
-    this.showPlane(plane, surface ? p : anchor, 1);
+    this.showPlane(plane, surface ? p : anchor, 0.7);
   }
 
   private move(e: PointerEvent) {
@@ -194,7 +194,7 @@ export class Sketch {
       if (e.pointerType !== 'touch' && e.buttons === 0) {
         const { plane, surface, anchor } = this.pickPlane(e);
         const p = this.project(e, plane, surface);
-        this.showPlane(plane, surface && p ? p : anchor, 0.35);
+        this.showPlane(plane, surface && p ? p : anchor, 0.18);
         if (p) this.dot.position.copy(p);
       }
       return;

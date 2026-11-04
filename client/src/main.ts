@@ -98,7 +98,15 @@ addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'z') sketch.undo();
   if (e.key === 'Enter') make();
 });
-addEventListener('keyup', (e) => e.code === 'Space' && e.target !== typed && stopTalk());
+addEventListener('keyup', (e) => {
+  if (e.code !== 'Space' || e.target === typed) return;
+  e.preventDefault(); // a focused toolbar button must not get clicked
+  stopTalk();
+});
+// Toolbar buttons give the focus back, so Space and Enter stay app shortcuts.
+document.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => b.blur()));
+// After a build the model turns slowly until the user touches the scene.
+stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
 $('make').addEventListener('click', () => make());
 
 function make() {
@@ -172,6 +180,8 @@ async function perceive(transcript: string) {
           const a = ev.answer;
           builder.apply(a.parts, sketch.strokes);
           sketch.settle();
+          stage.controls.autoRotateSpeed = 1.6;
+          stage.controls.autoRotate = true;
           showResult(a.subject, a.say || said, a.parts, ev.ms);
           status(`${a.subject} · ${a.parts.length}개 부품 · 첫 부품 ${(ev.firstMs / 1000).toFixed(1)} s · 그리고 말해서 고칠 수 있어요`);
           (window as any).last = ev;
