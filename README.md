@@ -139,3 +139,6 @@ The part tags (a background Spark pass per picture) are background information o
 
 Text-only Muse Image got every change right on the first try, so the win is not the edit itself: it redraws the whole picture, changing 2–19% of the pixels you didn't ask about (7.7% on average), while This & That changes 0–3% (1.3%), and you never have to describe where ("on the left"). Simple edits are also 3× faster. An earlier version lost 4 of 6 cases because its paste region was too tight (leftover steam, a door edge, a cut-off lamp); that is what the paste-what-changed-nearby rule fixes.
 
+## License
+
+MIT, see [LICENSE](LICENSE).

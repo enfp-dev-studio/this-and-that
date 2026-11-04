@@ -1,6 +1,7 @@
 {
   "name": "this-and-that",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
