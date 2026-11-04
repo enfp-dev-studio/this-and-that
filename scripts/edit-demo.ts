@@ -63,13 +63,21 @@ async function subtitle(text: string, file: string) {
   await sharp(Buffer.from(svg)).png().toFile(file);
 }
 
+// A quiet line of explanation at the top left (clear of the subtitles at the bottom).
+async function notePng(text: string, file: string) {
+  const size = 32, w = Math.round(text.length * size * 0.5) + 48;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="40" y="40" width="${w}" height="58" rx="10" fill="#000" fill-opacity="0.55"/><text x="64" y="80" font-family="${FONT}" font-size="${size}" font-weight="400" fill="#e4e4e7">${esc(text)}</text></svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(file);
+}
+
 // ---------- clips ----------
 
 type Sub = { from: number; to: number; text: string; png?: string }; // `png`: a full frame to show instead of `text`
 // Real time until `real`, a cut over the wait until `fastUntil`, then real time;
 // `zoom`: the camera's keyframes (source time, zoom, focus in the clip's 1600×1000 px).
 type Key = { t: number; z: number; x: number; y: number };
-type Plan = { real: number; fastUntil: number; subs: Sub[]; zoom?: Key[]; voice?: { file: string; at: number }; hold?: number; segs?: Seg[]; pulses?: Pulse[] };
+// `note`: one quiet line explaining the scene (top left, the whole clip).
+type Plan = { real: number; fastUntil: number; subs: Sub[]; zoom?: Key[]; voice?: { file: string; at: number }; hold?: number; segs?: Seg[]; pulses?: Pulse[]; note?: string };
 // A ring swelling out of a mark at source time `t` (capture px).
 type Pulse = { t: number; x: number; y: number; rx: number; ry: number; color: string };
 // Stretches of a clip in order, each in real time or cut (`fast`: a wait, left
@@ -151,7 +159,12 @@ async function clip(name: string, plan: Plan) {
       f.push(`${base}[c${i}]`, `[c${i}][${k}:v]overlay=${Math.round((W - w) / 2)}:132:enable='lt(t,2.6)'${last}[s${i}]`);
     } else f.push(`${base}${last}[s${i}]`);
   }
-  f.push(`${shown.map(({ i }) => `[s${i}]`).join('')}concat=n=${shown.length}:v=1:a=0[out]`);
+  f.push(`${shown.map(({ i }) => `[s${i}]`).join('')}concat=n=${shown.length}:v=1:a=0${plan.note ? '[outc]' : '[out]'}`);
+  if (plan.note) {
+    const png = join(work, `note-${name}.png`);
+    await notePng(plan.note, png);
+    f.push(`[outc][${input('-i', png)}:v]overlay=0:0:enable='gte(t,0.3)'[out]`);
+  }
   // The take's voice at its times in the clip, heard in the stretches shown.
   const outDur = shown.reduce((sum, { g }) => sum + (g.to - g.from) / (g.speed ?? 1), 0) + (plan.hold ?? 0);
   if (plan.voice) {
@@ -160,7 +173,9 @@ async function clip(name: string, plan: Plan) {
     const skip = Math.max(0, -plan.voice.at);
     const A = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo';
     f.push(`[${vi}:a]atrim=start=${skip.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${ms}|${ms},aresample=48000,${A},apad=whole_dur=${D.toFixed(3)},asplit=${shown.length}${shown.map(({ i }) => `[va${i}]`).join('')}`);
-    for (const { g, i } of shown) f.push(g.speed ? `[va${i}]atrim=0:${((g.to - g.from) / g.speed).toFixed(3)},volume=0,asetpts=PTS-STARTPTS[a${i}]` : `[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`);
+    // Each stretch faded in and out over a few hundredths of a second: no clicks at the cuts.
+    const fades = (d: number) => `afade=t=in:d=0.03,afade=t=out:st=${Math.max(0, d - 0.05).toFixed(3)}:d=0.05`;
+    for (const { g, i } of shown) f.push(g.speed ? `[va${i}]atrim=0:${((g.to - g.from) / g.speed).toFixed(3)},volume=0,asetpts=PTS-STARTPTS[a${i}]` : `[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS,${fades(g.to - g.from)}[a${i}]`);
     f.push(`${shown.map(({ i }) => `[a${i}]`).join('')}concat=n=${shown.length}:v=0:a=1,apad=whole_dur=${outDur.toFixed(3)}[aout]`);
   } else f.push(`anullsrc=r=48000:cl=stereo,atrim=0:${outDur.toFixed(3)}[aout]`);
   const out = join(work, `${String(seq++).padStart(2, '0')}-${name}.mp4`);
@@ -507,7 +522,7 @@ const LINE = ['Complex edits, asked simply:', 'draw and talk at the same time.']
 const illust = (f: string) => join(root, 'samples', 'illust', f);
 const opener = accepted('gem') ? 'gem' : null;
 if (opener) {
-  await clip(opener, await pointing(opener, illust('armor.jpg'), plan2d(opener, illust('armor.jpg'), false, 1.6), []));
+  await clip(opener, { ...(await pointing(opener, illust('armor.jpg'), plan2d(opener, illust('armor.jpg'), false, 1.6), [])), note: 'The stroke draws the new shape. Only that part changes.' });
   await closeUp(opener, illust('armor.jpg'));
 }
 await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 4);
@@ -516,16 +531,17 @@ await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { tex
 // place (only those that passed the acceptance check), three in one breath, 3D
 await macaronBeat();
 // (The cameo passed the check, but Spark's callout read "Recolor the cameo", not the shape asked for: left out.)
+const NOTES: Record<string, string> = { hairpin: 'Drawn as a star, it becomes a star, right where the pin was.' };
 const takes = [['clip', 'armor.jpg'], ['hairpin', 'gothic.jpg'], ['hook', 'armor.jpg'], ['emblem', 'armor.jpg']];
 for (const [name, image] of takes) {
   if (name === opener || !accepted(name)) continue;
-  await clip(name, await pointing(name, illust(image), plan2d(name, illust(image), false, 1.6), []));
+  await clip(name, { ...(await pointing(name, illust(image), plan2d(name, illust(image), false, 1.6), [])), note: NOTES[name] ?? 'The stroke draws the new shape. Only that part changes.' });
   await closeUp(name, illust(image));
 }
 if (accepted('three')) {
-  await clip('three', await pointing('three', illust('keyvisual.jpg'), plan2d('three', illust('keyvisual.jpg')), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
+  await clip('three', { ...(await pointing('three', illust('keyvisual.jpg'), plan2d('three', illust('keyvisual.jpg')), ['“this” → the phone', '“this” → the blazer', '“here” → the sky'])), note: 'Each “this” goes to the mark drawn at that moment.' });
   // One before/after toggle: before (held), then after again.
-  await clip('hold', { real: 99, fastUntil: 99, segs: [{ from: 1.25, to: 3.9 }], subs: [] });
+  await clip('hold', { real: 99, fastUntil: 99, segs: [{ from: 1.25, to: 3.9 }], subs: [], note: 'Before, then after: everything you didn’t mark stays the same.' });
 }
 // the evidence
 await card(
@@ -566,7 +582,7 @@ if (existsSync(join(demo, `${take3d}.timing.json`))) {
     at = st.done + 1.1;
   }
   segs.push({ from: at, to: Math.min(t.paint! - 0.6, at + 3.2) });
-  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
+  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, note: 'Strokes on a 3D model become parts that follow the drawn curve.' });
 }
 // A surface edit on the opened helmet: drawn and said, the result baked into its
 // textures, held from that view, then turned: it stays on the surface.
@@ -574,7 +590,7 @@ if (existsSync(join(demo, 'emblem3d.timing.json'))) {
   const t = timing('emblem3d');
   const st = t.steps![0];
   const D = dur(join(demo, 'emblem3d.mp4'));
-  await clip('emblem3d', { real: 0, fastUntil: 0, segs: [{ from: 0, to: st.release + 0.1 }, { from: st.release + 0.1, to: st.done + 0.6, fast: true, wait: st.done - st.release }, { from: st.done + 0.6, to: D }], subs: speech(t), zoom: [{ t: 0, z: 1.12, x: 800, y: 470 }], voice: { file: t.voice, at: t.voiceAt } });
+  await clip('emblem3d', { real: 0, fastUntil: 0, segs: [{ from: 0, to: st.release + 0.1 }, { from: st.release + 0.1, to: st.done + 0.6, fast: true, wait: st.done - st.release }, { from: st.done + 0.6, to: D }], subs: speech(t), zoom: [{ t: 0, z: 1.12, x: 800, y: 470 }], voice: { file: t.voice, at: t.voiceAt }, note: 'The emblem is baked into the model’s texture, so it stays from every angle.' });
   await closeUpFrames('emblem3d', st.say - 0.3, st.done + 0.9, st.done - st.release);
 }
 await card(
@@ -593,7 +609,28 @@ await card(
 
 const list = join(work, 'list.txt');
 writeFileSync(list, parts.map((p) => `file '${p}'`).join('\n'));
+const joined = join(work, 'joined.mp4');
+ff(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', joined]);
+// The sound: the voice ~9 dB lower (peaks near -14 dB), and under it a soft pad
+// made here (no music anyone else owns): Cmaj7 and Fmaj7 sine tones crossfading
+// over 16 s, a slow swell, lowpassed with a light echo, around -30 dB, ducked
+// under the voice, faded in and out.
+const T = dur(joined);
+const tone = (f: number, a = 1) => `${a}*sin(2*PI*${f}*t)+${(a * 0.18).toFixed(3)}*sin(4*PI*${f}*t)`;
+const chord = (fs: number[]) => fs.map((f) => tone(f)).join('+');
+const w = '(0.5-0.5*cos(2*PI*t/16))';
+const pad = `(1-${w})*(${chord([65.41, 130.81, 164.81, 196.0, 246.94])})+${w}*(${chord([87.31, 174.61, 220.0, 261.63, 329.63])})`;
 const final = join(demo, 'this-and-that-demo.mp4');
-ff(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', final]);
+ff([
+  '-i', joined,
+  '-f', 'lavfi', '-i', `aevalsrc='0.035*(${pad})*(0.8+0.2*sin(2*PI*t/9))':s=48000:d=${T.toFixed(2)}`,
+  '-filter_complex', [
+    `[0:a]volume=-9dB,asplit=2[v][key]`,
+    `[1:a]lowpass=f=900,aecho=0.8:0.6:120|260:0.3|0.2,aformat=channel_layouts=stereo,volume=7dB,afade=t=in:d=2.5,afade=t=out:st=${(T - 3).toFixed(2)}:d=3[bed]`,
+    `[bed][key]sidechaincompress=threshold=0.015:ratio=4:attack=30:release=500[ducked]`,
+    `[v][ducked]amix=inputs=2:normalize=0:duration=first[a]`,
+  ].join(';'),
+  '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-movflags', '+faststart', final,
+]);
 const total = dur(final);
 console.log(`\n${final}: ${Math.floor(total / 60)}:${String(Math.round(total % 60)).padStart(2, '0')} (${total.toFixed(1)} s, ${parts.length} parts)`);
