@@ -54,11 +54,11 @@ and open `http://localhost:8787` in Chrome on the tablet. Because it is `localho
 3. Release (or tap again) to send. Watch the progress, the caption and the list of understood edits.
 4. Drag the before/after slider. **Keep** makes the result the new image to keep refining, **Discard** throws it away, **Undo** goes back a version.
 
-With a stylus, finger touches on the image are ignored (palm rejection), so one hand can hold the talk button while the other draws.
+With a stylus, finger touches on the image are ignored (palm rejection, the pen toggle in the toolbar), so one hand can hold the talk button while the other draws. Undo/Redo and the History list move between kept versions; Before / After compares a pending result, or the current version with the previous one. The sun/moon button switches light and dark.
 
 ## Repo layout
 
-- `client/`: Vite + TypeScript web client (canvas, Pointer Events, MediaRecorder)
+- `client/`: Vite + React + Tailwind + shadcn/ui. `editor/engine.ts` is the editor without UI (canvas, Pointer Events, MediaRecorder, realtime captions, jobs, history); `components/` is the layout built only from shadcn components. Every colour and radius lives in `client/src/theme.css` (shadcn variables, light and dark, plus `--mark-1..6`), so a new theme is a new copy of that one file
 - `server/`: Node server. `meta.ts` (Meta API calls), `asr.ts` (realtime transcription relay), `render.ts` (video, guide image, paste-back), `pipeline.ts` (prompts and steps), `local.ts` (instant edits), `trace.ts` (timing and usage), `index.ts` (HTTP + jobs)
 - `m0/`: spike and benchmark scripts (synthetic Korean clips made with `say -v Yuna`; `clipkit.ts` builds and replays them, `bench.ts` times the app, `bench-vs.ts` compares it with text-only editing)
 - `samples/desk.png`: demo image generated with Muse Image during the hackathon
