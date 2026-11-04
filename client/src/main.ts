@@ -42,6 +42,8 @@ $('clear').addEventListener('click', () => {
   caption.textContent = '';
   status('펜/왼쪽 버튼으로 그리고, 마이크를 누른 채 말하세요');
 });
+const SHAPE_KO = { line: '직선', circle: '원', ellipse: '타원', arc: '호', arrow: '화살표' };
+sketch.onSnap = (kind) => status(`QuickShape: ${SHAPE_KO[kind]}으로 맞췄어요 · 되돌리기 하면 그린 그대로`);
 let sketchVisible = true;
 $('toggle-sketch').addEventListener('click', () => sketch.setVisible((sketchVisible = !sketchVisible)));
 
@@ -322,4 +324,29 @@ async function replayChair(say = '의자야, 등받이는 이렇게') {
   await perceive(say);
 }
 
-Object.assign(window, { THREE, stage, sketch, builder, perceive, demoChair, demoHouse, replayChair });
+// QuickShape before/after: the same wobbly shapes drawn twice, lifted at once
+// (top row, stays as drawn) and held still before lifting (bottom row, snapped).
+async function quickShapeDemo() {
+  $('clear').click();
+  stage.goTo('front', true);
+  const r = stage.renderer.domElement.getBoundingClientRect();
+  const sz = r.width * 0.06;
+  const row = (y: number): [number, number][][] => {
+    const cx = (k: number) => r.left + r.width * (0.2 + 0.15 * k);
+    const ring = (x: number, rx: number, ry: number, a0: number, a1: number) => Array.from({ length: 40 }, (_, i) => [x + rx * Math.cos(a0 + ((a1 - a0) * i) / 39), y + ry * Math.sin(a0 + ((a1 - a0) * i) / 39)] as [number, number]);
+    const x4 = cx(4);
+    return [
+      [[cx(0) - sz, y + sz * 0.6], [cx(0) + sz, y - sz * 0.6]],
+      ring(cx(1), sz, sz, 0, 2.05 * Math.PI),
+      ring(cx(2), sz * 1.15, sz * 0.6, 0.3, 0.3 + 2.03 * Math.PI),
+      ring(cx(3), sz, sz, 0.9 * Math.PI, 2.1 * Math.PI),
+      [[x4 - sz, y + sz * 0.4], [x4 + sz, y - sz * 0.4], [x4 + sz * 0.55, y - sz * 0.45], [x4 + sz, y - sz * 0.4], [x4 + sz * 0.75, y + sz * 0.02]],
+    ];
+  };
+  const top = r.top + r.height * 0.3, bottom = r.top + r.height * 0.58;
+  for (const pts of row(top)) await penStroke(stage, pts, 450, 7, { wobble: 3.5 });
+  for (const pts of row(bottom)) await penStroke(stage, pts, 450, 7, { wobble: 3.5, holdMs: 550 });
+  return sketch.strokes.map((s) => s.shape ?? 'as drawn');
+}
+
+Object.assign(window, { THREE, stage, sketch, builder, perceive, demoChair, demoHouse, replayChair, quickShapeDemo });

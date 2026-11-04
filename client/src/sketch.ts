@@ -12,6 +12,7 @@ import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import type { Stage } from './scene';
+import { fitShape, type Shape } from './quickshape';
 
 export type PlaneMode = 'view' | 'ground';
 export type Stroke = {
@@ -24,10 +25,14 @@ export type Stroke = {
   closed: boolean;
   round: number; // build round it belongs to
   line: Line2;
+  shape?: Shape['kind']; // QuickShape snapped it to this
+  raw?: { points: THREE.Vector3[]; times: number[] }; // the stroke as drawn, for undo
 };
 
 const INK = new THREE.Color('#25221f');
 const SNAP_PX = 16;
+const HOLD_MS = 400; // QuickShape: hold the pen still this long at the end of a stroke
+const HOLD_PX = 5;
 const _size = new THREE.Vector2();
 
 export function makeLine(points: THREE.Vector3[], color: THREE.ColorRepresentation, width: number) {
@@ -71,8 +76,17 @@ export class Sketch {
   mode: PlaneMode = 'view';
   round = 1;
   onChange: () => void = () => {};
+  onSnap: (kind: Shape['kind']) => void = () => {};
   private nextId = 1;
-  private drawing: { pointerId: number; stroke: Omit<Stroke, 'line'> & { line: Line2 | null }; plane: THREE.Plane; surface: boolean; screen: THREE.Vector2[] } | null = null;
+  private drawing: {
+    pointerId: number;
+    stroke: Omit<Stroke, 'line'> & { line: Line2 | null };
+    plane: THREE.Plane;
+    surface: boolean;
+    screen: THREE.Vector2[];
+    holdAt: THREE.Vector2; // where the pen last came to rest
+    holdTimer: number;
+  } | null = null;
   private ray = new THREE.Raycaster();
   private planeViz: THREE.Mesh;
   private dot: THREE.Mesh;
@@ -193,6 +207,8 @@ export class Sketch {
       plane,
       surface,
       screen: [new THREE.Vector2(e.clientX, e.clientY)],
+      holdAt: new THREE.Vector2(e.clientX, e.clientY),
+      holdTimer: 0,
       stroke: { id: this.nextId++, points: [p], times: [Date.now()], plane: surface ? 'surface' : this.mode, normal: plane.normal.clone(), viewDir, closed: false, round: this.round, line: null },
     };
     this.showPlane(plane, surface ? p : anchor, 0.7);
@@ -210,7 +226,14 @@ export class Sketch {
       }
       return;
     }
-    if (e.pointerId !== d.pointerId) return;
+    if (e.pointerId !== d.pointerId || d.stroke.shape) return; // snapped: the shape holds until the pen lifts
+    // Each real movement restarts the QuickShape hold timer.
+    const at = new THREE.Vector2(e.clientX, e.clientY);
+    if (at.distanceTo(d.holdAt) > HOLD_PX) {
+      d.holdAt = at;
+      clearTimeout(d.holdTimer);
+      d.holdTimer = window.setTimeout(() => this.quickShape(), HOLD_MS);
+    }
     const events = e.getCoalescedEvents?.().length ? e.getCoalescedEvents() : [e];
     for (const ev of events) {
       const s = new THREE.Vector2(ev.clientX, ev.clientY);
@@ -223,6 +246,35 @@ export class Sketch {
     }
     this.dot.position.copy(d.stroke.points[d.stroke.points.length - 1]);
     this.redraw();
+  }
+
+  // The pen rests at the end of a stroke: snap it to a clean shape in its
+  // drawing plane if one fits closely (line, circle, ellipse, arc, arrow).
+  private quickShape() {
+    const d = this.drawing;
+    if (!d || d.stroke.shape || d.stroke.points.length < 6) return;
+    let screenLen = 0;
+    for (let i = 1; i < d.screen.length; i++) screenLen += d.screen[i].distanceTo(d.screen[i - 1]);
+    if (screenLen < 30) return;
+    const s = d.stroke;
+    const n = d.plane.normal.clone().normalize();
+    const u = new THREE.Vector3().crossVectors(Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0), n).normalize();
+    const v = new THREE.Vector3().crossVectors(n, u);
+    const o = s.points[0].clone();
+    const shape = fitShape(s.points.map((p) => ({ x: p.clone().sub(o).dot(u), y: p.clone().sub(o).dot(v) })));
+    if (!shape) return;
+    const t0 = s.times[0], t1 = s.times[s.times.length - 1];
+    s.raw = { points: s.points, times: s.times };
+    s.points = shape.points.map((q) => o.clone().addScaledVector(u, q.x).addScaledVector(v, q.y));
+    s.times = s.points.map((_, i) => Math.round(t0 + ((t1 - t0) * i) / Math.max(1, s.points.length - 1)));
+    s.closed = shape.closed;
+    s.shape = shape.kind;
+    this.redraw();
+    // A short blue flash says "snapped".
+    const line = s.line!;
+    (line.material as LineMaterial).color.set('#2f6fde');
+    setTimeout(() => (line.material as LineMaterial).color.copy(INK), 350);
+    this.onSnap(shape.kind);
   }
 
   private redraw() {
@@ -240,11 +292,17 @@ export class Sketch {
     const d = this.drawing;
     if (!d || e.pointerId !== d.pointerId) return;
     this.drawing = null;
+    clearTimeout(d.holdTimer);
     this.stage.controls.enabled = true;
     this.vizTarget = 0;
     const s = d.stroke;
     if (s.points.length < 3 || !s.line) {
       if (s.line) this.stage.sketch.remove(s.line);
+      return;
+    }
+    if (s.shape) {
+      this.strokes.push(s as Stroke);
+      this.onChange();
       return;
     }
     // Light smoothing, then close loops that end near where they started.
@@ -285,6 +343,23 @@ export class Sketch {
   }
 
   undo() {
+    // A snapped stroke first goes back to how it was drawn.
+    const last = this.strokes[this.strokes.length - 1];
+    if (last?.raw) {
+      last.points = last.raw.points;
+      last.times = last.raw.times;
+      last.closed = false;
+      delete last.raw;
+      delete last.shape;
+      const opacity = (last.line.material as LineMaterial).opacity;
+      this.stage.sketch.remove(last.line);
+      last.line.geometry.dispose();
+      last.line = makeLine(last.points, INK, 3);
+      (last.line.material as LineMaterial).opacity = opacity;
+      this.stage.sketch.add(last.line);
+      this.onChange();
+      return true;
+    }
     const s = this.strokes.pop();
     if (!s) return false;
     this.stage.sketch.remove(s.line);

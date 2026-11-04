@@ -13,7 +13,8 @@ export function screenOf(stage: Stage, x: number, y: number, z: number) {
   return [r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height] as [number, number];
 }
 
-export async function penStroke(stage: Stage, pts: [number, number][], ms = 500, id = 7) {
+// `holdMs`: keep the pen still on the screen before lifting (QuickShape).
+export async function penStroke(stage: Stage, pts: [number, number][], ms = 500, id = 7, opts: { holdMs?: number; wobble?: number } = {}) {
   const el = stage.renderer.domElement;
   // Resample the polyline and add a little hand wobble.
   const path: [number, number][] = [];
@@ -25,7 +26,7 @@ export async function penStroke(stage: Stage, pts: [number, number][], ms = 500,
   path.push(pts[pts.length - 1]);
   const phase = Math.random() * 6;
   const fire = (type: string, [x, y]: [number, number], i: number, buttons: number) => {
-    const w = Math.sin(i * 0.35 + phase) * 1.6;
+    const w = Math.sin(i * 0.35 + phase) * (opts.wobble ?? 1.6);
     el.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'pen', isPrimary: true, clientX: x + w, clientY: y - w, button: type === 'pointermove' ? -1 : 0, buttons, pressure: buttons ? 0.6 : 0, bubbles: true, cancelable: true }));
   };
   fire('pointerdown', path[0], 0, 1);
@@ -33,6 +34,7 @@ export async function penStroke(stage: Stage, pts: [number, number][], ms = 500,
     fire('pointermove', path[i], i, 1);
     await wait(ms / path.length);
   }
+  if (opts.holdMs) await wait(opts.holdMs);
   fire('pointerup', path[path.length - 1], path.length, 0);
   await wait(120);
 }
