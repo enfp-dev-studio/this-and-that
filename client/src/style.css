@@ -40,6 +40,7 @@ button.on { background: var(--ink); color: var(--paper); }
 .say { font-size: 15px; line-height: 1.4; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .chips span { font-size: 11px; padding: 3px 7px; border-radius: 999px; background: rgba(0, 0, 0, 0.06); display: inline-flex; align-items: center; gap: 4px; }
+.actions { display: flex; gap: 6px; }
 .reroll { margin-top: 8px; min-height: 34px; padding: 6px 10px; font-size: 12px; border: 1px solid var(--line); }
 .chips i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 

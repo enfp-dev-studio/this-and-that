@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import type { Stage } from './scene';
 import type { Stroke } from './sketch';
+import { fixRotation } from './fit';
 
 export type Part = {
   name: string;
@@ -97,6 +98,7 @@ export class Builder {
   // `partial`: parts still arriving from the stream; keep the ones not listed yet.
   apply(parts: Part[], strokes: Stroke[], partial = false) {
     const byId = new Map(strokes.map((s) => [s.id, s]));
+    parts = parts.map((p) => fixRotation(p, byId));
     const now = performance.now();
     const next = new Map<string, Built>();
     // Bottom-up, so the model grows from the ground.

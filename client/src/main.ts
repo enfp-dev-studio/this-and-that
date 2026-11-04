@@ -4,6 +4,7 @@ import { Stage } from './scene';
 import { Sketch, type Stroke } from './sketch';
 import { renderViews, strokeColor, type View } from './views';
 import { Voice } from './voice';
+import { applyPaint, renderModel } from './paint';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -141,6 +142,31 @@ $('reroll').addEventListener('click', () => {
   if (b) perceive(b.transcript);
 });
 
+// ── paint: Muse Image repaints the current view, projected back on ─────────
+let subject = '';
+$('paint').addEventListener('click', async () => {
+  if (busy || !builder.parts.length) return;
+  busy = true;
+  stage.controls.autoRotate = false;
+  status('Muse Image가 지금 보는 방향에서 모델을 칠하는 중…', true);
+  const style = typed.value.trim();
+  typed.value = '';
+  try {
+    const { image, cam } = renderModel(stage);
+    const res = await fetch('/api/paint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, subject, style }) });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error);
+    await applyPaint(stage, r.image, cam, image);
+    const strip = $('strip');
+    strip.insertAdjacentHTML('afterbegin', `<figure><img src="${r.image}"><figcaption>MUSE IMAGE</figcaption></figure>`);
+    status(`Muse Image ${(r.ms / 1000).toFixed(1)} s · 칠한 방향에서 볼 때 가장 좋아요`);
+  } catch (e) {
+    status(`칠하기 실패: ${String(e).slice(0, 160)}`);
+  } finally {
+    busy = false;
+  }
+});
+
 // ── perceive → build ───────────────────────────────────────────────────────
 function strokeInfo(s: Stroke) {
   const box = new THREE.Box3().setFromPoints(s.points);
@@ -204,6 +230,7 @@ async function perceive(transcript: string) {
         if (ev.type === 'error') throw new Error(ev.error);
         if (ev.type === 'done') {
           const a = ev.answer;
+          subject = a.subject;
           builds.push({ parts: before, transcript });
           builder.apply(a.parts, sketch.strokes);
           sketch.settle();

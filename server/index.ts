@@ -5,7 +5,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
-import { RealtimeAsr, transcribe } from './meta.ts';
+import { editImage, RealtimeAsr, transcribe } from './meta.ts';
 import { perceive } from './perceive.ts';
 
 const PORT = Number(process.env.PORT ?? 8795);
@@ -82,6 +82,19 @@ createServer(async (req, res) => {
         res.write(JSON.stringify({ type: 'error', error: String(e?.message ?? e) }) + '\n');
       }
       return res.end();
+    }
+    // Muse Image repaints a render of the model; the client projects it back on.
+    if (req.method === 'POST' && url.pathname === '/api/paint') {
+      const { image, subject, style } = JSON.parse((await readBody(req)).toString());
+      const prompt = `This is a plain 3D render of a simple low-poly ${subject || 'object'} on a white background. Repaint it as a finished, stylized, hand-painted 3D game asset. This is texture painting only: the result is projected back onto the 3D model, so every edge, the silhouette, the position, the size and the camera angle must stay exactly where they are in this render, even if a shape looks odd. Only add surface materials and detail (for example wood grain, roof tiles, bricks, fabric weave), richer painted colors and soft lighting. Do not add, remove, move or reshape anything. Keep the plain white background.${style ? ` Style: ${style}.` : ''}`;
+      const t0 = Date.now();
+      const out = await editImage(prompt, image);
+      const dir = join(OUT, `paint-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'in.jpg'), Buffer.from(image.split(',')[1], 'base64'));
+      writeFileSync(join(dir, 'out.jpg'), Buffer.from(out.split(',')[1], 'base64'));
+      console.log(`[paint] ${Date.now() - t0} ms (${dir})`);
+      return send(res, 200, { image: out, ms: Date.now() - t0 });
     }
     // Static client.
     if (req.method === 'GET' && existsSync(DIST)) {

@@ -119,6 +119,27 @@ export async function sparkStream(opts: { system: string; content: any[]; schema
   }
 }
 
+// Muse Image edit of one JPEG/PNG data URL → JPEG data URL. Its agent tools
+// (image search, web search, shell) are off: an edit needs none of them.
+export async function editImage(prompt: string, image: string, size = '1024x1024'): Promise<string> {
+  const payload = JSON.stringify({
+    model: MODELS.image,
+    n: 1,
+    response_format: 'b64_json',
+    output_format: 'jpeg',
+    prompt,
+    size,
+    images: [{ image_url: image }],
+    tool_enablement: { enable_image_search: false, enable_web_search: false, enable_shell: false },
+  });
+  return withRetry('Muse Image', 60_000, async (signal) => {
+    const res = await fetch(`${BASE_URL}/images/edits`, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: payload, signal });
+    const json: any = await res.json();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
+    return `data:image/jpeg;base64,${json.data[0].b64_json}`;
+  });
+}
+
 export const imagePart = (dataUrl: string) => ({ type: 'image_url', image_url: { url: dataUrl } });
 export const textPart = (text: string) => ({ type: 'text', text });
 
