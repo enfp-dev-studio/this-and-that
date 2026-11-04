@@ -16,7 +16,7 @@ import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { transcribe, type Mask } from './meta.ts';
-import { guideImage, museEdit, museEditSpoken, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { guideImage, museEdit, museEditSpoken, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, colorOf, renderVideo, toWav, type Stroke } from './render.ts';
@@ -114,8 +114,8 @@ async function readBody(req: IncomingMessage) {
 }
 
 // Experiments, each switchable per request (body.opts) or by env default.
-type Opts = { instant: boolean; speculate: boolean };
-const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1' };
+type Opts = { instant: boolean; speculate: boolean; muse: MuseMode };
+const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1', muse: (process.env.MUSE_MODE as MuseMode) ?? 'notools' };
 
 async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr) {
   const dir = join(jobsDir, job.id);
@@ -160,7 +160,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     const asrResult = await asr;
     const clauses = asrResult ? splitClauses(asrResult.transcript, strokes.length) : null;
     if (clauses) {
-      const edited = T('muse edit (speculative)', async () => museEditSpoken(image, await guide, clauses, trace));
+      const edited = T('muse edit (speculative)', async () => museEditSpoken(image, await guide, clauses, trace, opts.muse));
       edited.catch(() => {});
       spec = { clauses, edited };
     }
@@ -216,7 +216,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     } else {
       if (spec) job.speculation = 'wrong';
       const genStrokes = strokes.filter((s) => generative.some((e) => e.mark === s.mark));
-      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), generative, trace));
+      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), generative, trace, opts.muse));
     }
     if (spec === null && opts.speculate) job.speculation = 'skipped';
     writeFileSync(join(dir, 'edited.jpg'), edited);

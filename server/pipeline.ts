@@ -169,10 +169,22 @@ Keep everything else exactly as in the first image: composition, framing, every 
 // JPEG in and out: a tenth of the upload of PNG and ~2 s faster, same look
 // (M2 spike). Cropping or shrinking the input did not help: Muse Image
 // renders ~2.4 MP whatever it is given.
-export async function museEdit(image: Buffer, guide: Buffer, edits: Edit[], trace?: Trace) {
+// Muse Image is an agentic planner with image search, web search and a shell
+// on by default; an edit needs none of them. Turning them off kept quality and
+// the median (~9.8 s) but cut the slow tail (max 15.9 → 11.8 s over 12 runs);
+// reasoning_strength low halves input tokens but was no faster, and edits are
+// billed per image, so it saves nothing.
+export type MuseMode = 'default' | 'notools' | 'notools-low';
+export const museParams = (mode: MuseMode = 'default') => ({
+  output_format: 'jpeg',
+  ...(mode !== 'default' ? { tool_enablement: { enable_image_search: false, enable_web_search: false, enable_shell: false } } : {}),
+  ...(mode === 'notools-low' ? { reasoning_strength: 'low' } : {}),
+});
+
+export async function museEdit(image: Buffer, guide: Buffer, edits: Edit[], trace?: Trace, mode?: MuseMode) {
   const { width, height } = await sharp(image).metadata();
   const jpeg = (b: Buffer) => sharp(b).jpeg({ quality: 92 }).toBuffer();
-  return editImage(editPrompt(edits), [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, { output_format: 'jpeg' });
+  return editImage(editPrompt(edits), [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, museParams(mode));
 }
 
 // Where the edit clearly changed the picture near a mark (steam above a
@@ -269,12 +281,12 @@ export function specMatches(clauses: string[], edits: Edit[]) {
 }
 
 // Muse Image with the spoken words per mark, before Spark has answered.
-export async function museEditSpoken(image: Buffer, guide: Buffer, clauses: string[], trace?: Trace) {
+export async function museEditSpoken(image: Buffer, guide: Buffer, clauses: string[], trace?: Trace, mode?: MuseMode) {
   const { width, height } = await sharp(image).metadata();
   const lines = clauses.map((c, i) => `${i + 1}. At the ${colorNameOf(i + 1)} mark numbered ${i + 1}, the person said: "${c}"`);
   const prompt = `Edit the first image. The second image is the same picture with numbered coloured marks. While drawing each mark, the person said (in Korean) what to change there; words like 이거/이건/여기 (this/here) and 저거/저건/저기 (that/there) mean what that mark covers, and 이쪽/저쪽 (this way) mean the direction a mark points. The words come from speech recognition and may contain mistakes (a word that sounds alike): read each as the most plausible instruction for what is under its mark.
 ${lines.join('\n')}
 Make exactly these changes. Keep everything else exactly as in the first image: composition, framing, every other object, lighting and art style. The output must not contain any of the marks, lines or numbers from the second image.`;
   const jpeg = (b: Buffer) => sharp(b).jpeg({ quality: 92 }).toBuffer();
-  return editImage(prompt, [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, { output_format: 'jpeg' });
+  return editImage(prompt, [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, museParams(mode));
 }

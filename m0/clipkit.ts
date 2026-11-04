@@ -86,7 +86,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)))
 // Replay a clip against the server: marks sent as each stroke ends, voice
 // streamed for realtime transcription (unless realtime is false), release
 // when the voice ends. Returns what the user would wait for.
-export async function replay(base: string, imageId: string, strokes: Stroke[], wavPath: string, opts: { instant?: boolean; speculate?: boolean; realtime?: boolean } = {}) {
+export async function replay(base: string, imageId: string, strokes: Stroke[], wavPath: string, opts: { instant?: boolean; speculate?: boolean; realtime?: boolean; muse?: string } = {}) {
   const post = async (path: string, body: unknown) => (await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
   const wav = readFileSync(wavPath);
   const pcm = wav.subarray(44); // 16 kHz mono s16le
@@ -113,7 +113,7 @@ export async function replay(base: string, imageId: string, strokes: Stroke[], w
   const released = Date.now();
   await Promise.all([...markCalls, streamed]);
   const audio = `data:audio/wav;base64,${wav.toString('base64')}`;
-  const { id } = await post('/api/jobs', { imageId, strokes: marks, audio, asrId, opts: { instant: opts.instant ?? true, speculate: opts.speculate ?? false } });
+  const { id } = await post('/api/jobs', { imageId, strokes: marks, audio, asrId, opts: { instant: opts.instant ?? true, speculate: opts.speculate ?? false, ...(opts.muse ? { muse: opts.muse } : {}) } });
 
   let editsAt = 0, previewAt = 0, job: any;
   for (;;) {
