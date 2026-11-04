@@ -17,13 +17,35 @@ import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoke
 import { applyLocal, LOCAL_OPS } from './local';
 import { audioDurationMs, canEncodeVideo, warmUpVideo, colorOf, composeWithRefs, cropAround, dataUrlOf, drawn, encode, fromPixels, jpegUrl, keyFrames, maxVolumeDb, outlineImage, pixels, renderVideo, toWav, type Source, type Stroke } from './render';
 import { Trace } from './trace';
-import { all, get, loadBlob, put, saveBlob } from './store';
+import { all, del, get, loadBlob, put, removeBlob, saveBlob } from './store';
 
 const MAX_SIDE = 2048;
 const MAX_UPLOAD_BYTES = 40e6;
 const MAX_UPLOAD_PIXELS = 60e6;
 // Probe the video codecs and wake the encoder before the first edit needs them.
 setTimeout(warmUpVideo, 1500);
+
+// What this browser keeps stays bounded: the last few sessions' pictures
+// (and anything from the last hour, such as a result not yet kept), and the
+// voice, video and raw edit of the last 30 jobs. Records and traces are small
+// and stay.
+const KEEP_SESSIONS = 5;
+const KEEP_JOB_FILES = 30;
+async function prune() {
+  const sessions = (await all<{ id: string; at: number; versions?: string[]; refs?: { imageId: string }[] }>('sessions')).sort((a, b) => b.at - a.at);
+  for (const old of sessions.slice(KEEP_SESSIONS)) await del('sessions', old.id);
+  const keep = new Set(sessions.slice(0, KEEP_SESSIONS).flatMap((x) => [...(x.versions ?? []), ...(x.refs ?? []).map((r) => r.imageId)]));
+  const hourAgo = Date.now() - 3600_000;
+  for (const img of await all<{ id: string; at?: number; type?: string }>('images')) {
+    if (keep.has(img.id) || images.has(img.id) || (img.at ?? 0) > hourAgo) continue;
+    await removeBlob(`images/${img.id}.${img.type === 'image/png' ? 'png' : 'jpg'}`);
+    await del('images', img.id);
+    await del('parts', img.id);
+  }
+  const jobRecords = (await all<{ id: string; startedAt?: number }>('jobs')).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  for (const j of jobRecords.slice(KEEP_JOB_FILES)) await removeBlob(`jobs/${j.id}`);
+}
+setTimeout(() => prune().catch((e) => console.warn('[store] prune:', e)), 10_000);
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 // ---------- images ----------

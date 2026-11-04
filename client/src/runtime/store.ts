@@ -37,6 +37,7 @@ const warn = (what: string) => (e: unknown) => console.warn(`[store] ${what}:`, 
 export const put = (store: StoreName, value: { id: string } & Record<string, unknown>) => tx(store, 'readwrite', (s) => s.put(value)).catch(warn(`put ${store}`));
 export const get = <T>(store: StoreName, id: string) => tx<T | undefined>(store, 'readonly', (s) => s.get(id) as IDBRequest<T | undefined>).catch(() => undefined);
 export const all = <T>(store: StoreName) => tx<T[]>(store, 'readonly', (s) => s.getAll() as IDBRequest<T[]>).catch(() => [] as T[]);
+export const del = (store: StoreName, id: string) => tx(store, 'readwrite', (s) => s.delete(id)).catch(warn(`delete ${store}`));
 
 // ---------- blobs ----------
 
@@ -80,6 +81,24 @@ export async function loadBlob(path: string): Promise<Blob | null> {
     return (await get<{ blob: Blob }>('blobs', path))?.blob ?? null;
   } catch {
     return null;
+  }
+}
+
+// A file or a folder of blobs, gone (in OPFS, or the IndexedDB fallback).
+export async function removeBlob(path: string) {
+  try {
+    const root = await opfs;
+    if (!root) {
+      const keys = (await all<{ id: string }>('blobs')).map((b) => b.id).filter((id) => id === path || id.startsWith(`${path}/`));
+      await Promise.all(keys.map((id) => del('blobs', id)));
+      return;
+    }
+    const parts = path.split('/');
+    let dir = root;
+    for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p);
+    await dir.removeEntry(parts.at(-1)!, { recursive: true });
+  } catch {
+    // Already gone.
   }
 }
 

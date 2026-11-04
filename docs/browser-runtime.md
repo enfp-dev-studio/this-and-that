@@ -14,6 +14,8 @@ On the `browser-runtime` branch the whole app runs in the browser: the static bu
 | `server/3d/*` | `perceive.ts` (3D perception + Muse Image painting) |
 | `out/jobs/<id>/…` files | `store.ts`: IndexedDB (`images`, `jobs`, `traces`, `parts`, `sessions` with versions and references, `models` for 3D) and OPFS for blobs (`images/<id>.jpg`, `jobs/<id>/{voice.wav,video.mp4,edited.jpg}`); `navigator.storage.persist()` is asked on load |
 
+Storage stays bounded: 10 s after load the app drops pictures not used by the last 5 sessions (older than an hour) and the voice, video and raw edit files of all but the last 30 jobs; records and traces stay.
+
 After a reload the empty state offers "Continue where you left off": the last session's versions and references come back from OPFS under their own ids (with their part names from IndexedDB), and Undo/Redo work across them.
 
 The mic is captured once as 16 kHz PCM (`editor/live-asr.ts`): it streams to realtime transcription, and the same samples are the voice track of Spark's video and the batch fallback's WAV. The UI is unchanged except for one shadcn Dialog that asks for the demo passcode (`components/passcode-gate.tsx`) and a toast when a demo limit is reached.
