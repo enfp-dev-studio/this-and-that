@@ -19,7 +19,7 @@ import { transcribe, type Mask } from './meta.ts';
 import { editAreas, guideImage, museEdit, museEditSpoken, touchesAreas, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
-import { audioDurationMs, colorOf, renderVideo, toWav, type Stroke } from './render.ts';
+import { audioDurationMs, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -117,13 +117,16 @@ async function readBody(req: IncomingMessage) {
 type Opts = { instant: boolean; speculate: boolean; muse: MuseMode };
 const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1', muse: (process.env.MUSE_MODE as MuseMode) ?? 'notools' };
 
-async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr) {
+// Marks drawn on reference pictures, and references pinned to every edit.
+type Refs = { marks: { ref: StoredImage; stroke: Stroke }[]; pinned: StoredImage[] };
+
+async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr, refs: Refs = { marks: [], pinned: [] }) {
   const dir = join(jobsDir, job.id);
   mkdirSync(dir, { recursive: true });
   const trace = new Trace();
   const T = <R>(name: string, f: () => Promise<R>) => trace.time(name, f);
   const image = img.png;
-  writeFileSync(join(dir, 'strokes.json'), JSON.stringify(strokes));
+  writeFileSync(join(dir, 'strokes.json'), JSON.stringify({ strokes, refMarks: refs.marks.map((m) => ({ ref: m.ref.id, ...m.stroke })), pinned: refs.pinned.map((p) => p.id) }));
 
   // Masks: from the marks sent while drawing, or started now for any that weren't.
   const markResults = strokes.map((s, i) => (markIds[i] && marks.get(markIds[i]!)) || startMark(img, s).done);
@@ -147,16 +150,19 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     return wavPath ? batch() : null;
   })();
   asr.then((r) => (job.transcript = r?.transcript));
+  // With marks on references, Spark watches them side by side with the picture.
+  const composed = refs.marks.length ? await T('compose refs', () => composeWithRefs(image, strokes, refs.marks)) : null;
   const video = T('render video', async () => {
     const durationMs = wavPath ? await audioDurationMs(wavPath) : 0;
-    return readFileSync(await renderVideo(image, strokes, wavPath, join(dir, 'video.mp4'), { durationMs, maxSide: 512 }));
+    const [videoImage, videoStrokes] = composed ? [composed.composite, composed.strokes] : [image, strokes];
+    return readFileSync(await renderVideo(videoImage, videoStrokes, wavPath, join(dir, 'video.mp4'), { durationMs, maxSide: composed ? 768 : 512 }));
   });
   const guide = T('guide image', () => guideImage(image, strokes));
 
   // Speculation: start Muse Image as soon as the transcript is in, guessing
   // that the n-th "this/that" goes with the n-th mark. Spark then checks.
   let spec: { clauses: string[]; edited: Promise<Buffer> } | null = null;
-  if (opts.speculate) {
+  if (opts.speculate && !refs.marks.length && !refs.pinned.length) {
     const asrResult = await asr;
     const clauses = asrResult ? splitClauses(asrResult.transcript, strokes.length) : null;
     if (clauses) {
@@ -171,7 +177,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   const [asrResult, mp4] = await Promise.all([asr, video]);
   let edits: Edit[];
   try {
-    const r = await T('spark', () => understandVideo(mp4, strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant }));
+    const r = await T('spark', () => understandVideo(mp4, composed?.strokes ?? strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant, places: composed?.places }));
     edits = r.edits;
     job.transcript ||= r.transcript;
     job.via = 'spark-video';
@@ -180,9 +186,19 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     edits = (await T('spark fallback', async () => understandTranscript(await guide, strokes, asrResult?.turns ?? [], { effort: 'minimal', trace }))).edits;
     job.via = 'transcript';
   }
+  const isRefMark = (mark: number) => refs.marks.some((m) => m.stroke.mark === mark);
+  job.edits = edits.filter((e) => strokes.some((s) => s.mark === e.mark) || isRefMark(e.mark));
+  writeFileSync(join(dir, 'edits.json'), JSON.stringify(job.edits, null, 2));
+  // Only marks on the picture are edited; reference marks become extra images for Muse.
+  const refEdits = edits.filter((e) => isRefMark(e.mark));
   edits = edits.filter((e) => strokes.some((s) => s.mark === e.mark));
-  job.edits = edits;
-  writeFileSync(join(dir, 'edits.json'), JSON.stringify(edits, null, 2));
+  const extras = [
+    ...(await Promise.all(refs.marks.map(async ({ ref, stroke }) => ({
+      image: await cropAround(ref.png, stroke),
+      label: `the area marked ${stroke.mark} on a reference picture${refEdits.find((e) => e.mark === stroke.mark)?.target ? ` (${refEdits.find((e) => e.mark === stroke.mark)!.target})` : ''}`,
+    })))),
+    ...refs.pinned.map((p) => ({ image: p.png, label: 'a reference the user pinned (a character or style sheet): keep the character on-model and the style consistent with it' })),
+  ];
 
   const results = await Promise.all(markResults);
   for (const [i, r] of results.entries()) {
@@ -231,7 +247,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     } else {
       if (spec) job.speculation = 'wrong';
       const genStrokes = strokes.filter((s) => generative.some((e) => e.mark === s.mark));
-      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), generative, trace, opts.muse));
+      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), generative, trace, opts.muse, extras));
     }
     if (spec === null && opts.speculate) job.speculation = 'skipped';
     writeFileSync(join(dir, 'edited.jpg'), edited);
@@ -311,15 +327,23 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       const upload = decodeDataUrl(body.image);
       const img = upload ? await storeImage(upload) : images.get(body.imageId);
-      const raw: (Stroke & { markId?: string })[] = body.strokes ?? [];
-      if (!img || !raw.length) return send(res, 400, { error: 'need an image and at least one mark' });
+      const all: (Stroke & { markId?: string; on?: string })[] = body.strokes ?? [];
+      const raw = all.filter((s) => !s.on);
+      if (!img || !raw.length) return send(res, 400, { error: 'need an image and at least one mark on it' });
       const job: Job = { id: newId(), stage: 'understand', startedAt: Date.now() };
       jobs.set(job.id, job);
       const strokes = raw.map(({ mark, points }) => scaleStroke({ mark, points }, img.k));
+      const refs: Refs = {
+        marks: all.flatMap(({ mark, points, on }) => {
+          const ref = on ? images.get(String(on)) : undefined;
+          return ref ? [{ ref, stroke: scaleStroke({ mark, points }, ref.k) }] : [];
+        }),
+        pinned: ((body.pinned ?? []) as string[]).flatMap((id) => images.get(String(id)) ?? []),
+      };
       const opts: Opts = { ...DEFAULT_OPTS, ...(body.opts ?? {}) };
       const live = body.asrId ? liveAsr.get(String(body.asrId)) : undefined;
       if (live) liveAsr.delete(String(body.asrId));
-      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts, live).catch((e) => {
+      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts, live, refs).catch((e) => {
         console.error(`[${job.id}]`, e);
         job.error = String(e.message ?? e);
         job.stage = 'error';

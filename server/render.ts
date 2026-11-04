@@ -168,3 +168,48 @@ export async function pasteBack(original: Buffer, edited: Buffer, alpha: Buffer)
   }
   return sharp(out, { raw: { width: width!, height: height!, channels: 3 } }).png().toBuffer();
 }
+
+// The video Spark watches when marks are also drawn on references: each
+// reference (scaled to the picture's height) on the left, the picture on the
+// right, with every stroke moved to where its image now sits.
+export async function composeWithRefs(image: Buffer, strokes: Stroke[], refMarks: { ref: { id: string; png: Buffer }; stroke: Stroke }[]) {
+  const { height: H, width: W } = await sharp(image).metadata();
+  const refs = [...new Map(refMarks.map((m) => [m.ref.id, m.ref])).values()];
+  const placed: { input: Buffer; left: number; top: number }[] = [];
+  const offset = new Map<string, { x: number; k: number }>();
+  let x = 0;
+  for (const ref of refs) {
+    const m = await sharp(ref.png).metadata();
+    const k = H! / m.height!;
+    const w = Math.round(m.width! * k);
+    placed.push({ input: await sharp(ref.png).resize(w, H!).png().toBuffer(), left: x, top: 0 });
+    offset.set(ref.id, { x, k });
+    x += w;
+  }
+  placed.push({ input: image, left: x, top: 0 });
+  const composite = await sharp({ create: { width: x + W!, height: H!, channels: 3, background: '#000000' } }).composite(placed).png().toBuffer();
+  const moved: Stroke[] = [
+    ...refMarks.map(({ ref, stroke }) => {
+      const o = offset.get(ref.id)!;
+      return { mark: stroke.mark, points: stroke.points.map((p) => ({ x: o.x + p.x * o.k, y: p.y * o.k, t: p.t })) };
+    }),
+    ...strokes.map((s) => ({ mark: s.mark, points: s.points.map((p) => ({ x: x + p.x, y: p.y, t: p.t })) })),
+  ].sort((a, b) => a.mark - b.mark);
+  const letter = (id: string) => String.fromCharCode(65 + refs.findIndex((r) => r.id === id));
+  const places = new Map<number, string>([
+    ...refMarks.map(({ ref, stroke }) => [stroke.mark, `reference ${letter(ref.id)} (left part of the video)`] as [number, string]),
+    ...strokes.map((s) => [s.mark, 'the picture to edit (right part of the video)'] as [number, string]),
+  ]);
+  return { composite, strokes: moved, places };
+}
+
+// The area around a mark on a reference, for Muse Image to copy from.
+export async function cropAround(png: Buffer, s: Stroke) {
+  const { width, height } = await sharp(png).metadata();
+  const b = strokeBox(s);
+  const side = Math.max(192, (b.right - b.left) * 1.4, (b.bottom - b.top) * 1.4);
+  const cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
+  const left = Math.max(0, Math.round(cx - side / 2)), top = Math.max(0, Math.round(cy - side / 2));
+  const w = Math.min(width! - left, Math.round(side)), h = Math.min(height! - top, Math.round(side));
+  return sharp(png).extract({ left, top, width: w, height: h }).jpeg({ quality: 92 }).toBuffer();
+}

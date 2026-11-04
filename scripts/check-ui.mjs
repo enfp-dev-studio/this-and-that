@@ -9,7 +9,7 @@ import { join, relative } from 'node:path';
 const root = join(import.meta.dirname, '..', 'client', 'src');
 const ALLOWED = new Set([
   'h-full', 'h-dvh', 'w-full', 'size-full', 'min-h-0', 'min-w-0',
-  'w-(--panel-width)', 'w-(--status-width)', 'w-(--slider-width)', 'w-(--card-width)',
+  'w-(--panel-width)', 'w-(--status-width)', 'w-(--slider-width)', 'w-(--card-width)', 'w-(--ref-width)',
   'p-2', 'p-4', 'gap-2', 'gap-4',
 ]);
 const RULES = [

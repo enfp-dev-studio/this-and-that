@@ -3,11 +3,14 @@ import { toast } from 'sonner';
 import { editor } from '@/editor/engine';
 import { TopBar } from '@/components/top-bar';
 import { Stage } from '@/components/stage';
+import { RefPanel } from '@/components/ref-panel';
+import { useEditor } from '@/hooks/use-editor';
 import { SidePanel } from '@/components/side-panel';
 
 // Canvas-first editor: slim top bar, the image in the middle with a floating
 // toolbar, and the understood instructions, captions and history on the right.
 export function App() {
+  const s = useEditor();
   useEffect(() => {
     editor.onError = (message) => toast.error('Something went wrong', { description: message });
     editor.onNotice = (message) => toast(message);
@@ -23,6 +26,7 @@ export function App() {
     <div className="flex h-dvh flex-col">
       <TopBar />
       <div className="flex min-h-0 flex-1">
+        {s.activeRef && <RefPanel key={s.activeRef} />}
         <Stage />
         <aside className="hidden w-(--panel-width) shrink-0 border-l bg-background lg:block">
           <SidePanel />

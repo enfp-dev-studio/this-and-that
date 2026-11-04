@@ -1,7 +1,8 @@
-// The editor without the UI: the canvas (image, marks, SAM outlines, sheen),
-// recording (marks + voice + realtime transcription), jobs and version
-// history. React reads its state through subscribe/getSnapshot; pointer
-// drawing goes straight to the canvas.
+// The editor without the UI: the canvases (the picture being edited, and an
+// open reference), marks, SAM outlines, sheen, recording (marks + voice +
+// realtime transcription), jobs, references and version history. React reads
+// its state through subscribe/getSnapshot; pointer drawing goes straight to
+// the canvas.
 
 import { postJson } from './api';
 import { LiveAsr } from './live-asr';
@@ -11,6 +12,7 @@ export type Point = { x: number; y: number; t: number };
 export type Stroke = {
   mark: number;
   points: Point[];
+  on?: string; // the reference this mark is drawn on; none = the picture being edited
   markId?: string; // SAM request for this mark, sent when the stroke ends
   mask?: HTMLImageElement; // SAM's outline of what the mark points at
   tinted?: { color: string; canvas: HTMLCanvasElement };
@@ -19,6 +21,9 @@ export type Stroke = {
 };
 export type Edit = { mark: number; kind?: string; op?: string; target: string; instruction: string };
 export type Version = { url: string; imageId: Promise<string> };
+// A reference picture: a character sheet, a style, or a detail like an ornament.
+// Pinned ones go to every edit; others only when a mark is drawn on them.
+export type Ref = { id: string; url: string; imageId: Promise<string>; pinned: boolean };
 export type StepState = 'pending' | 'active' | 'done';
 export type Mode = 'empty' | 'idle' | 'recording' | 'processing' | 'review';
 export type Fit = { x: number; y: number; w: number; h: number };
@@ -36,7 +41,9 @@ export type Snapshot = {
   index: number; // current version
   result: Version | null; // the edit waiting for Keep or Discard
   compare: boolean; // before/after overlay
-  fit: Fit; // where the image sits in the stage, CSS px
+  fit: Fit; // where the picture sits in its stage, CSS px
+  refs: Ref[];
+  activeRef: string | null; // the reference open beside the picture
 };
 
 type Job = {
@@ -50,9 +57,17 @@ type Job = {
   elapsedMs: number;
 };
 
+// One drawing surface: the picture being edited, or the open reference.
+type Surface = {
+  key: 'target' | 'ref';
+  el?: HTMLElement;
+  canvas?: HTMLCanvasElement;
+  ctx?: CanvasRenderingContext2D;
+  image: HTMLImageElement | null;
+};
+
 const NO_STEPS = { sam: 'pending', understand: 'pending', edit: 'pending', paste: 'pending' } as const;
 const SERVER_STEPS = ['understand', 'edit', 'paste', 'done'] as const;
-
 
 export const blobToDataUrl = (blob: Blob) =>
   new Promise<string>((resolve) => {
@@ -65,6 +80,13 @@ async function upload(url: string) {
   const dataUrl = url.startsWith('data:') ? url : await blobToDataUrl(await (await fetch(url)).blob());
   return (await postJson('/api/images', { image: dataUrl })).imageId as string;
 }
+
+const loadImage = async (url: string) => {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return img;
+};
 
 class Editor {
   private snapshot: Snapshot = {
@@ -81,18 +103,18 @@ class Editor {
     result: null,
     compare: false,
     fit: { x: 0, y: 0, w: 0, h: 0 },
+    refs: [],
+    activeRef: null,
   };
   private listeners = new Set<() => void>();
   onError: (message: string) => void = () => {};
   onNotice: (message: string) => void = () => {};
 
-  private stage?: HTMLElement;
-  private canvas?: HTMLCanvasElement;
-  private ctx?: CanvasRenderingContext2D;
-  private image: HTMLImageElement | null = null;
+  private target: Surface = { key: 'target', image: null };
+  private ref: Surface = { key: 'ref', image: null };
   private preview: HTMLImageElement | null = null; // instant edits, shown while the rest is edited
   private strokes: Stroke[] = [];
-  private drawing: Stroke | null = null;
+  private drawing: { stroke: Stroke; surface: Surface } | null = null;
 
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -114,18 +136,24 @@ class Editor {
     for (const l of this.listeners) l();
   }
 
-  // ---------- canvas ----------
+  // ---------- canvases ----------
 
   attach(stage: HTMLElement, canvas: HTMLCanvasElement) {
-    this.stage = stage;
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
+    return this.attachSurface(this.target, stage, canvas);
+  }
+
+  attachRef(stage: HTMLElement, canvas: HTMLCanvasElement) {
+    return this.attachSurface(this.ref, stage, canvas);
+  }
+
+  private attachSurface(surface: Surface, el: HTMLElement, canvas: HTMLCanvasElement) {
+    Object.assign(surface, { el, canvas, ctx: canvas.getContext('2d')! });
     const ro = new ResizeObserver(() => this.draw());
-    ro.observe(stage);
+    ro.observe(el);
     const unwatch = watchTheme(() => this.draw());
     const listeners = new AbortController();
     const on = <K extends keyof HTMLElementEventMap>(type: K, f: (e: HTMLElementEventMap[K]) => void) => canvas.addEventListener(type, f, { signal: listeners.signal });
-    on('pointerdown', (e) => this.pointerDown(e));
+    on('pointerdown', (e) => this.pointerDown(surface, e));
     on('pointermove', (e) => this.pointerMove(e));
     on('pointerup', () => this.endStroke());
     on('pointercancel', () => this.endStroke());
@@ -134,50 +162,66 @@ class Editor {
       ro.disconnect();
       unwatch();
       listeners.abort();
+      if (surface.canvas === canvas) Object.assign(surface, { el: undefined, canvas: undefined, ctx: undefined });
     };
   }
 
-  private fitRect(): Fit & { k: number } {
-    const w = this.stage?.clientWidth ?? 0;
-    const h = this.stage?.clientHeight ?? 0;
-    if (!this.image) return { x: 0, y: 0, w, h, k: 1 };
-    // Room around the image, and below it for the floating toolbar (theme.css).
-    const pad = themeLength('--stage-padding'), below = themeLength('--toolbar-clearance');
+  // Where a surface's image sits, in CSS px. The picture leaves room below
+  // for the floating toolbar (theme.css).
+  private fitRect(surface: Surface): Fit & { k: number } {
+    const w = surface.el?.clientWidth ?? 0;
+    const h = surface.el?.clientHeight ?? 0;
+    const img = surface.image;
+    if (!img) return { x: 0, y: 0, w, h, k: 1 };
+    const pad = themeLength('--stage-padding');
+    const below = surface.key === 'target' ? themeLength('--toolbar-clearance') : pad;
     const aw = Math.max(1, w - pad * 2), ah = Math.max(1, h - pad - below);
-    const k = Math.min(aw / this.image.naturalWidth, ah / this.image.naturalHeight);
-    const iw = this.image.naturalWidth * k, ih = this.image.naturalHeight * k;
+    const k = Math.min(aw / img.naturalWidth, ah / img.naturalHeight);
+    const iw = img.naturalWidth * k, ih = img.naturalHeight * k;
     return { x: (w - iw) / 2, y: pad + (ah - ih) / 2, w: iw, h: ih, k };
   }
 
+  private strokesOn(surface: Surface) {
+    return this.strokes.filter((s) => (surface.key === 'target' ? !s.on : s.on === this.snapshot.activeRef));
+  }
+
   draw() {
-    const { canvas, ctx, stage } = this;
-    if (!canvas || !ctx || !stage) return;
+    this.drawSurface(this.target);
+    this.drawSurface(this.ref);
+  }
+
+  private drawSurface(surface: Surface) {
+    const { canvas, ctx, el, image } = surface;
+    if (!canvas || !ctx || !el) return;
     const dpr = devicePixelRatio || 1;
-    const cw = Math.round(stage.clientWidth * dpr), ch = Math.round(stage.clientHeight * dpr);
+    const cw = Math.round(el.clientWidth * dpr), ch = Math.round(el.clientHeight * dpr);
     if (canvas.width !== cw || canvas.height !== ch) [canvas.width, canvas.height] = [cw, ch];
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const r = this.fitRect();
-    const f = this.snapshot.fit;
-    if (f.x !== r.x || f.y !== r.y || f.w !== r.w || f.h !== r.h) queueMicrotask(() => this.set({ fit: { x: r.x, y: r.y, w: r.w, h: r.h } }));
-    if (!this.image) return;
-    ctx.drawImage(this.preview ?? this.image, r.x, r.y, r.w, r.h);
+    const r = this.fitRect(surface);
+    if (surface.key === 'target') {
+      const f = this.snapshot.fit;
+      if (f.x !== r.x || f.y !== r.y || f.w !== r.w || f.h !== r.h) queueMicrotask(() => this.set({ fit: { x: r.x, y: r.y, w: r.w, h: r.h } }));
+    }
+    if (!image) return;
+    ctx.drawImage(surface.key === 'target' ? (this.preview ?? image) : image, r.x, r.y, r.w, r.h);
 
-    // SAM outlines: a tint in the mark's colour, plus a sheen while the edit runs.
-    const masks = this.strokes.filter((s) => s.mask && !s.settled);
+    const strokes = this.strokesOn(surface);
     const working = this.snapshot.mode === 'processing';
+    // SAM outlines (the picture only): a tint in the mark's colour, plus a sheen while the edit runs.
+    const masks = strokes.filter((s) => s.mask && !s.settled);
     if (masks.length) {
       ctx.globalAlpha = working ? 0.28 : 0.38;
       for (const s of masks) ctx.drawImage(this.tint(s), r.x, r.y, r.w, r.h);
       ctx.globalAlpha = 1;
-      if (working) this.drawSheen(masks, r);
+      if (working) this.drawSheen(ctx, masks, r);
     }
 
     ctx.save();
     ctx.translate(r.x, r.y);
     ctx.scale(r.k, r.k);
-    const unit = Math.max(this.image.naturalWidth, this.image.naturalHeight) / 160;
-    for (const s of this.strokes) this.drawStroke(s, unit, working ? 0.55 : 1);
+    const unit = Math.max(image.naturalWidth, image.naturalHeight) / 160;
+    for (const s of strokes) this.drawStroke(ctx, image, s, unit, working ? 0.55 : 1);
     ctx.restore();
   }
 
@@ -198,7 +242,7 @@ class Editor {
   }
 
   private sheenCanvas = document.createElement('canvas');
-  private drawSheen(masks: Stroke[], r: Fit) {
+  private drawSheen(ctx: CanvasRenderingContext2D, masks: Stroke[], r: Fit) {
     const c = this.sheenCanvas;
     const g = c.getContext('2d')!;
     c.width = Math.max(1, Math.round(r.w));
@@ -208,14 +252,13 @@ class Editor {
     const span = c.width + c.height;
     const at = ((performance.now() / 1400) % 1) * span * 1.6 - span * 0.3;
     const grad = g.createLinearGradient(at - 160, at * 0.4 - 80, at + 160, at * 0.4 + 80);
-    const sheen = themeVar('--sheen');
     grad.addColorStop(0, 'transparent');
-    grad.addColorStop(0.5, sheen);
+    grad.addColorStop(0.5, themeVar('--sheen'));
     grad.addColorStop(1, 'transparent');
     g.fillStyle = grad;
     g.fillRect(0, 0, c.width, c.height);
     g.globalCompositeOperation = 'source-over';
-    this.ctx!.drawImage(c, r.x, r.y, r.w, r.h);
+    ctx.drawImage(c, r.x, r.y, r.w, r.h);
   }
 
   private animate = () => {
@@ -225,8 +268,7 @@ class Editor {
   };
 
   // Same look as the server's render: halo, colour line, numbered badge.
-  private drawStroke(s: Stroke, unit: number, alpha: number) {
-    const ctx = this.ctx!;
+  private drawStroke(ctx: CanvasRenderingContext2D, image: HTMLImageElement, s: Stroke, unit: number, alpha: number) {
     if (!s.points.length) return;
     const color = markColor(s.mark);
     const halo = themeVar('--mark-halo');
@@ -243,8 +285,8 @@ class Editor {
     }
     const r = unit * 2.6;
     const p0 = s.points[0];
-    const bx = Math.min(Math.max(p0.x, r), this.image!.naturalWidth - r);
-    const by = Math.min(Math.max(p0.y - r * 1.3, r), this.image!.naturalHeight - r);
+    const bx = Math.min(Math.max(p0.x, r), image.naturalWidth - r);
+    const by = Math.min(Math.max(p0.y - r * 1.3, r), image.naturalHeight - r);
     ctx.beginPath();
     ctx.arc(bx, by, r, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -260,27 +302,31 @@ class Editor {
     ctx.globalAlpha = 1;
   }
 
-  private toImage(e: PointerEvent): Point {
-    const box = this.canvas!.getBoundingClientRect();
-    const r = this.fitRect();
+  private toImage(surface: Surface, e: PointerEvent): Point {
+    const box = surface.canvas!.getBoundingClientRect();
+    const r = this.fitRect(surface);
+    const img = surface.image!;
     const x = (e.clientX - box.left - r.x) / r.k;
     const y = (e.clientY - box.top - r.y) / r.k;
     return {
-      x: Math.round(Math.max(0, Math.min(this.image!.naturalWidth - 1, x))),
-      y: Math.round(Math.max(0, Math.min(this.image!.naturalHeight - 1, y))),
+      x: Math.round(Math.max(0, Math.min(img.naturalWidth - 1, x))),
+      y: Math.round(Math.max(0, Math.min(img.naturalHeight - 1, y))),
       t: Math.round(performance.now() - this.t0),
     };
   }
 
-  private async pointerDown(e: PointerEvent) {
+  private async pointerDown(surface: Surface, e: PointerEvent) {
     const { mode } = this.snapshot;
-    if (!this.image || mode === 'processing' || mode === 'review') return;
+    if (!this.target.image || !surface.image || mode === 'processing' || mode === 'review') return;
     if (e.pointerType === 'pen' && !this.snapshot.penOnly) this.set({ penOnly: true });
     if (e.pointerType === 'touch' && this.snapshot.penOnly) return; // palm rejection once a stylus is in use
-    this.canvas!.setPointerCapture(e.pointerId);
+    surface.canvas!.setPointerCapture(e.pointerId);
     if (mode === 'idle') await this.startRecording();
-    this.drawing = { mark: this.strokes.length + 1, points: [this.toImage(e)] };
-    this.strokes.push(this.drawing);
+    // Marks are numbered across the picture and the reference, in drawing order.
+    const stroke: Stroke = { mark: this.strokes.length + 1, points: [this.toImage(surface, e)] };
+    if (surface.key === 'ref') stroke.on = this.snapshot.activeRef!;
+    this.drawing = { stroke, surface };
+    this.strokes.push(stroke);
     this.set({ marks: this.strokes.length });
     this.draw();
   }
@@ -288,27 +334,27 @@ class Editor {
   private pointerMove(e: PointerEvent) {
     if (!this.drawing) return;
     const coalesced = e.getCoalescedEvents?.() ?? [];
-    for (const ev of coalesced.length ? coalesced : [e]) this.drawing.points.push(this.toImage(ev));
+    for (const ev of coalesced.length ? coalesced : [e]) this.drawing.stroke.points.push(this.toImage(this.drawing.surface, ev));
     this.draw();
   }
 
   private endStroke() {
-    if (this.drawing) this.segment(this.drawing);
+    if (this.drawing) this.segment(this.drawing.stroke);
     this.drawing = null;
   }
 
   // Ask SAM for this mark right away; show its outline when it comes back.
+  // Marks on a reference are crops for Muse Image, not edit regions.
   private async segment(s: Stroke) {
+    if (s.on) {
+      s.samDone = true;
+      return;
+    }
     s.markId = crypto.randomUUID().slice(0, 8);
     try {
       const imageId = await this.current()!.imageId;
       const r = await postJson('/api/marks', { imageId, markId: s.markId, stroke: { mark: s.mark, points: s.points } });
-      if (r.found) {
-        const mask = new Image();
-        mask.src = r.overlay;
-        await mask.decode();
-        s.mask = mask;
-      }
+      if (r.found) s.mask = await loadImage(r.overlay);
     } catch (err) {
       console.warn('SAM for mark', s.mark, 'failed:', err);
     }
@@ -331,6 +377,34 @@ class Editor {
     this.draw();
   }
 
+  // ---------- references ----------
+
+  async addRef(file: Blob) {
+    const url = await blobToDataUrl(file);
+    const ref: Ref = { id: crypto.randomUUID().slice(0, 8), url, imageId: upload(url), pinned: false };
+    ref.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
+    this.set({ refs: [...this.snapshot.refs, ref] });
+    await this.openRef(ref.id);
+  }
+
+  async openRef(id: string | null) {
+    const ref = this.snapshot.refs.find((r) => r.id === id);
+    this.ref.image = ref ? await loadImage(ref.url) : null;
+    this.set({ activeRef: ref ? ref.id : null });
+    this.draw();
+  }
+
+  togglePin(id: string) {
+    this.set({ refs: this.snapshot.refs.map((r) => (r.id === id ? { ...r, pinned: !r.pinned } : r)) });
+  }
+
+  removeRef(id: string) {
+    if (this.snapshot.mode === 'recording' || this.snapshot.mode === 'processing') return;
+    this.strokes = this.strokes.filter((s) => s.on !== id);
+    this.set({ refs: this.snapshot.refs.filter((r) => r.id !== id), marks: this.strokes.length });
+    if (this.snapshot.activeRef === id) this.openRef(null);
+  }
+
   // ---------- images and history ----------
 
   private current() {
@@ -338,10 +412,7 @@ class Editor {
   }
 
   private async show(url: string) {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    this.image = img;
+    this.target.image = await loadImage(url);
     this.preview = null;
     this.strokes = [];
   }
@@ -403,7 +474,7 @@ class Editor {
 
   async talkDown() {
     const { mode } = this.snapshot;
-    if (!this.image || mode === 'processing') return;
+    if (!this.target.image || mode === 'processing') return;
     this.pressedAt = performance.now();
     this.startedByThisPress = mode === 'idle' || mode === 'review';
     if (mode === 'review') await this.keep();
@@ -461,18 +532,20 @@ class Editor {
     this.recorder = null;
     const asrId = this.live ? this.live.stop() : Promise.resolve(null);
     this.live = null;
-    if (!this.strokes.length) {
+    if (!this.strokes.some((s) => !s.on)) {
       this.set({ mode: 'idle' });
-      this.onNotice('Draw a mark while you talk.');
+      this.onNotice('Draw a mark on the picture while you talk.');
       return;
     }
     this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'active' }, elapsedMs: 0 });
     this.updateSamStep();
     this.animate();
     try {
+      const refId = (id?: string) => this.snapshot.refs.find((r) => r.id === id)?.imageId;
       const { id } = await postJson('/api/jobs', {
         imageId: await this.current()!.imageId,
-        strokes: this.strokes.map(({ mark, points, markId }) => ({ mark, points, markId })),
+        strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on }) => ({ mark, points, markId, on: on ? await refId(on) : undefined }))),
+        pinned: await Promise.all(this.snapshot.refs.filter((r) => r.pinned).map((r) => r.imageId)),
         audio: audio ? await blobToDataUrl(audio) : null,
         asrId: await asrId,
       });
@@ -520,19 +593,14 @@ class Editor {
 
   // Local edits are done: show them now, keep the sheen on what Muse is still editing.
   private async showPreview(id: string, localMarks: number[]) {
-    const img = new Image();
-    img.src = `/api/images/${id}.jpg`;
-    await img.decode();
-    this.preview = img;
+    this.preview = await loadImage(`/api/images/${id}.jpg`);
     for (const s of this.strokes) if (localMarks.includes(s.mark)) s.settled = true;
     this.draw();
   }
 
   private async showResult(resultImageId: string) {
     const result: Version = { url: `/api/images/${resultImageId}.jpg`, imageId: Promise.resolve(resultImageId) };
-    const img = new Image();
-    img.src = result.url;
-    await img.decode();
+    await loadImage(result.url);
     this.set({ mode: 'review', result, compare: true, steps: { sam: 'done', understand: 'done', edit: 'done', paste: 'done' } });
     this.draw();
   }

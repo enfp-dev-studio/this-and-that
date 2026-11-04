@@ -35,7 +35,7 @@ function editsSchema(o: { transcript?: boolean; heard?: boolean; ops?: boolean }
   const item: Record<string, object> = {
     mark: { type: 'integer', description: 'The number on the mark' },
     ...(o.heard ? { heard: { type: 'string', description: 'The words spoken while this mark was being drawn, verbatim' } } : {}),
-    kind: { type: 'string', enum: ['object', 'pointer'], description: 'object: the mark circles, covers or scribbles over the thing to change. pointer: an arrow or line that shows a direction or a destination for another mark' },
+    kind: { type: 'string', enum: ['object', 'pointer', 'reference'], description: 'object: the mark circles, covers or scribbles over the thing to change. pointer: an arrow or line that shows a direction or a destination for another mark. reference: a mark on a reference picture, showing what something should look like' },
     target: { type: 'string', description: 'The object or area the mark covers or points at: an English noun phrase of 1-4 words' },
     instruction: { type: 'string', description: 'The change to make there: a short English imperative of at most 12 words. Self-contained, no "this" or "that".' },
     ...(o.ops ? OP_FIELDS : {}),
@@ -53,27 +53,30 @@ const EDITS_SCHEMA = editsSchema();
 
 const sec = (ms: number) => (ms / 1000).toFixed(1);
 
-function markList(strokes: Stroke[], withTimes: boolean) {
+function markList(strokes: Stroke[], withTimes: boolean, places?: Map<number, string>) {
   return strokes
     .map((s) => {
       const times = withTimes ? `, drawn from ${sec(s.points[0].t)} s to ${sec(s.points.at(-1)!.t)} s` : '';
-      return `- mark ${s.mark}: ${colorNameOf(s.mark)}${times}`;
+      const place = places?.get(s.mark) ? `, on ${places.get(s.mark)}` : '';
+      return `- mark ${s.mark}: ${colorNameOf(s.mark)}${place}${times}`;
     })
     .join('\n');
 }
+
+const REF_RULES = `The video shows reference picture(s) on the left and the picture to edit on the right. A mark on a reference shows what something should look like (an ornament, a hairpin, a lace pattern, a face or pose): give it kind "reference" and say in target what it shows. The instruction for the related mark on the picture to edit must name the reference mark, e.g. "Redesign the hairpin to match reference mark 1".`;
 
 const RULES = `Deictic words such as 이거/이것/이건/여기/이쪽 (this, here) and 저거/저건/저기/저쪽 (that, there) refer to the mark being drawn at the moment the word is spoken, not to the nearest object or to the order of the marks. One instruction can span several marks (e.g. "move this over here" with a circle and an arrow): then give each mark its part of the change. A mark the person said nothing about gets an instruction inferred from the other marks, or "No change".`;
 
 // Primary path: Spark watches the drawing video with the voice track.
 // A transcript from Voice Transcribe, when given, guards against mishearing.
-export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { model?: string; withTimes?: boolean; effort?: string; transcript?: string; trace?: Trace; fps?: number; heard?: boolean; ops?: boolean } = {}) {
+export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { model?: string; withTimes?: boolean; effort?: string; transcript?: string; trace?: Trace; fps?: number; heard?: boolean; ops?: boolean; places?: Map<number, string> } = {}) {
   const heard = opts.transcript ? `\nA speech recogniser heard: "${opts.transcript}". Trust these words; use the audio for when each word is said.\n` : '';
   const text = `This video shows a person refining a picture. While speaking (often Korean), they draw numbered marks on it with a pen; each mark has its own colour and a numbered badge, and a white dot shows the pen tip while it is moving. Listen to the audio and watch when each mark is drawn.
 
-${RULES}
+${RULES}${opts.places ? `\n${REF_RULES}` : ''}
 ${heard}
 The marks:
-${markList(strokes, !!opts.withTimes)}
+${markList(strokes, !!opts.withTimes, opts.places)}
 
 For every mark, report ${opts.heard === false ? '' : 'what was said while drawing it and '}the change wanted there. Keep it short.`;
   const schema = opts.transcript || opts.ops ? editsSchema({ heard: opts.heard !== false, transcript: !opts.transcript, ops: opts.ops }) : EDITS_SCHEMA;
@@ -181,10 +184,17 @@ export const museParams = (mode: MuseMode = 'default') => ({
   ...(mode === 'notools-low' ? { reasoning_strength: 'low' } : {}),
 });
 
-export async function museEdit(image: Buffer, guide: Buffer, edits: Edit[], trace?: Trace, mode?: MuseMode) {
+// Extra images after the picture and its guide: crops around reference marks
+// and pinned references (Muse Image takes up to 10 images in all).
+export type Extra = { image: Buffer; label: string };
+
+export async function museEdit(image: Buffer, guide: Buffer, edits: Edit[], trace?: Trace, mode?: MuseMode, extras: Extra[] = []) {
   const { width, height } = await sharp(image).metadata();
   const jpeg = (b: Buffer) => sharp(b).jpeg({ quality: 92 }).toBuffer();
-  return editImage(editPrompt(edits), [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, museParams(mode));
+  const used = extras.slice(0, 8);
+  const refLines = used.map((x, i) => `Image ${i + 3} is ${x.label}.`).join('\n');
+  const prompt = used.length ? `${editPrompt(edits)}\n${refLines}\nWhere an instruction refers to a reference, copy its design, pattern and details faithfully, adapted to the picture's angle, lighting and style.` : editPrompt(edits);
+  return editImage(prompt, [await jpeg(image), await jpeg(guide), ...(await Promise.all(used.map((x) => jpeg(x.image))))], `${width}x${height}`, trace, museParams(mode));
 }
 
 // Where the edit clearly changed the picture near a mark (steam above a
