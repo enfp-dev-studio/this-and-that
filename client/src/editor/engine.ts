@@ -20,7 +20,11 @@ export type Stroke = {
   tinted?: { color: string; canvas: HTMLCanvasElement };
   samDone?: boolean;
   settled?: boolean; // no tint or sheen: an arrow, "no change", or already edited locally
+  pen?: 'point' | 'shape'; // the pen mode it was drawn with, when not auto
 };
+// Auto: the app tells from what is said whether a mark selects or draws a new
+// shape. Point and Shape force it.
+export type PenMode = 'auto' | 'point' | 'shape';
 export type Edit = { mark: number; kind?: string; op?: string; target: string; instruction: string };
 export type Version = { url: string; imageId: Promise<string> };
 // A reference picture: a character sheet, a style, or a detail like an ornament.
@@ -41,6 +45,7 @@ export type Snapshot = {
   elapsedMs: number;
   marks: number; // marks drawn in this recording
   penOnly: boolean; // once a stylus is used, fingers don't draw
+  penMode: PenMode;
   versions: Version[];
   index: number; // current version
   result: Version | null; // the edit waiting for Keep or Discard
@@ -113,6 +118,7 @@ class Editor {
     elapsedMs: 0,
     marks: 0,
     penOnly: false,
+    penMode: 'auto',
     versions: [],
     index: -1,
     result: null,
@@ -432,6 +438,7 @@ class Editor {
     // Marks are numbered across the picture and the reference, in drawing order.
     const stroke: Stroke = { mark: this.strokes.length + 1, points: [this.toImage(surface, e)] };
     if (surface.key === 'ref') stroke.on = this.snapshot.activeRef!;
+    else if (this.snapshot.penMode !== 'auto') stroke.pen = this.snapshot.penMode;
     this.drawing = { stroke, surface };
     this.strokes.push(stroke);
     this.set({ marks: this.strokes.length });
@@ -474,6 +481,10 @@ class Editor {
 
   setPenOnly(on: boolean) {
     this.set({ penOnly: on });
+  }
+
+  setPenMode(penMode: PenMode) {
+    this.set({ penMode });
   }
 
   clearMarks() {
@@ -687,7 +698,7 @@ class Editor {
       const refId = (id?: string) => this.snapshot.refs.find((r) => r.id === id)?.imageId;
       const body = {
         imageId: await this.current()!.imageId,
-        strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on }) => ({ mark, points, markId, on: on ? await refId(on) : undefined }))),
+        strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on, pen }) => ({ mark, points, markId, pen, on: on ? await refId(on) : undefined }))),
         pinned: await Promise.all(this.snapshot.refs.filter((r) => r.pinned).map((r) => r.imageId)),
         audio: audio ? await blobToDataUrl(audio) : null,
       };

@@ -9,7 +9,7 @@ import { colorNameOf, guideImage, pasteAlpha, pasteBack, strokeBox, type Stroke 
 export type Edit = {
   mark: number;
   heard?: string;
-  kind?: 'object' | 'pointer' | 'reference';
+  kind?: 'object' | 'pointer' | 'reference' | 'sketch';
   target: string;
   instruction: string;
   // With instant edits on: what kind of change, so simple ones run locally.
@@ -35,9 +35,9 @@ function editsSchema(o: { transcript?: boolean; heard?: boolean; ops?: boolean }
   const item: Record<string, object> = {
     mark: { type: 'integer', description: 'The number on the mark' },
     ...(o.heard ? { heard: { type: 'string', description: 'The words spoken while this mark was being drawn, verbatim' } } : {}),
-    kind: { type: 'string', enum: ['object', 'pointer', 'reference'], description: 'object: the mark circles, covers or scribbles over the thing to change. pointer: an arrow or line that shows a direction or a destination for another mark. reference: a mark on a reference picture, showing what something should look like' },
+    kind: { type: 'string', enum: ['object', 'pointer', 'reference', 'sketch'], description: 'object: the mark circles, covers or scribbles over the thing to change (a selection). sketch: the stroke itself draws the wanted new shape, outline, silhouette or detail; its geometry is what to follow. pointer: an arrow or line that shows a direction or a destination for another mark. reference: a mark on a reference picture, showing what something should look like' },
     target: { type: 'string', description: 'The object or area the mark covers or points at: an English noun phrase of 1-4 words' },
-    instruction: { type: 'string', description: 'The change to make there: a short English imperative of at most 12 words. Self-contained, no "this" or "that".' },
+    instruction: { type: 'string', description: 'The change to make there: a short English imperative of at most 12 words. Self-contained, no "this" or "that". For a sketch: "Reshape the <target> to follow the drawn outline" plus any detail said.' },
     ...(o.ops ? OP_FIELDS : {}),
   };
   return {
@@ -58,14 +58,16 @@ function markList(strokes: Stroke[], withTimes: boolean, places?: Map<number, st
     .map((s) => {
       const times = withTimes ? `, drawn from ${sec(s.points[0].t)} s to ${sec(s.points.at(-1)!.t)} s` : '';
       const place = places?.get(s.mark) ? `, on ${places.get(s.mark)}` : '';
-      return `- mark ${s.mark}: ${colorNameOf(s.mark)}${place}${times}`;
+      const pen = s.pen === 'shape' ? ' (drawn with the Shape pen: kind sketch)' : s.pen === 'point' ? ' (drawn with the Point pen: a selection or pointer, never a sketch)' : '';
+      return `- mark ${s.mark}: ${colorNameOf(s.mark)}${place}${pen}${times}`;
     })
     .join('\n');
 }
 
 const REF_RULES = `The video shows reference picture(s) on the left and the picture to edit on the right. A mark on a reference shows what something should look like (an ornament, a hairpin, a lace pattern, a face or pose): give it kind "reference" and say in target what it shows. The instruction for the related mark on the picture to edit must name the reference mark, e.g. "Redesign the hairpin to match reference mark 1".`;
 
-const RULES = `Deictic words such as 이거/이것/이건/여기/이쪽 (this, here) and 저거/저건/저기/저쪽 (that, there) refer to the mark being drawn at the moment the word is spoken, not to the nearest object or to the order of the marks. One instruction can span several marks (e.g. "move this over here" with a circle and an arrow): then give each mark its part of the change. A mark the person said nothing about gets an instruction inferred from the other marks, or "No change".`;
+const RULES = `Deictic words such as 이거/이것/이건/여기/이쪽 (this, here) and 저거/저건/저기/저쪽 (that, there) refer to the mark being drawn at the moment the word is spoken, not to the nearest object or to the order of the marks. One instruction can span several marks (e.g. "move this over here" with a circle and an arrow): then give each mark its part of the change. A mark the person said nothing about gets an instruction inferred from the other marks, or "No change".
+A mark can draw the new shape itself rather than select something: the person says so (이렇게, 이 모양으로, 이런 모양, 이렇게 생기게, like this, this shape), and the stroke is a deliberate contour (an outline, spikes, a silhouette, an added detail) traced over or beside the object, not a loose loop or scribble around it. Give such a mark kind "sketch" and an instruction to reshape the target to follow the drawn outline. A loop drawn just to say "this one" is an object mark.`;
 
 // Primary path: Spark watches the drawing video with the voice track.
 // A transcript from Voice Transcribe, when given, guards against mishearing.
@@ -160,10 +162,41 @@ export function strokeMask(s: Stroke, width: number, height: number, scale: numb
   return { width, height, data };
 }
 
+// A sketch's region: inside its path (closed from last point to first) plus a
+// band along the line, so a new outline larger than the old part is covered.
+export function strokeHull(s: Stroke, width: number, height: number, scale: number): Mask {
+  const pts = s.points.map((p) => ({ x: p.x * scale, y: p.y * scale }));
+  const b = strokeBox(s);
+  const band = Math.max(4, Math.max(width, height) * 0.015);
+  const data = new Uint8Array(width * height);
+  const [x0, x1] = [Math.max(0, Math.floor(b.left * scale - band)), Math.min(width, Math.ceil(b.right * scale + band))];
+  const [y0, y1] = [Math.max(0, Math.floor(b.top * scale - band)), Math.min(height, Math.ceil(b.bottom * scale + band))];
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
+      let inside = false, near = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const a = pts[i], c = pts[j];
+        if (a.y > y !== c.y > y && x < ((c.x - a.x) * (y - a.y)) / (c.y - a.y) + a.x) inside = !inside;
+        if (!near && i > 0) {
+          // Distance to the segment from point i-1 to i (the drawn line, not the closing edge).
+          const p = pts[i - 1], dx = a.x - p.x, dy = a.y - p.y;
+          const t = Math.max(0, Math.min(1, ((x - p.x) * dx + (y - p.y) * dy) / Math.max(1e-6, dx * dx + dy * dy)));
+          near = Math.hypot(x - p.x - t * dx, y - p.y - t * dy) <= band;
+        }
+      }
+      if (inside || near) data[y * width + x] = 1;
+    }
+  return { width, height, data };
+}
+
 export function editPrompt(edits: Edit[]) {
   const lines = edits
     .filter((e) => !/^no change/i.test(e.instruction))
-    .map((e) => `${e.mark}. At the ${colorNameOf(e.mark)} mark numbered ${e.mark} (${e.target}): ${e.instruction}`);
+    .map((e) => {
+      const line = `${e.mark}. At the ${colorNameOf(e.mark)} mark numbered ${e.mark} (${e.target}): ${e.instruction}`;
+      // A sketch: the line is the new outline, not a selection.
+      return e.kind === 'sketch' ? `${line}. The ${colorNameOf(e.mark)} line ${e.mark} is the new outline drawn by the person: reshape the ${e.target} so its edge follows that line exactly (its path, proportions and size), keeping its material, colour, lighting and detail.` : line;
+    });
   return `Edit the first image. The second image is the same picture with numbered coloured marks showing where each change goes. Make exactly these changes:
 ${lines.join('\n')}
 Keep everything else exactly as in the first image: composition, framing, every other object, lighting and art style. The output must not contain any of the marks, lines or numbers from the second image.`;
@@ -240,6 +273,13 @@ export function editAreas(strokes: Stroke[], edits: Edit[], seg: Seg, scale: num
       // Where an arrow points, something may arrive: look a quarter of the image around it.
       regions.push(strokeMask(s, seg.width, seg.height, scale));
       near.push([x0 - side / 4, y0 - side / 4, x1 + side / 4, y1 + side / 4]);
+    } else if (e.kind === 'sketch') {
+      // The old part (SAM) and the new shape (the stroke's hull), so neither is clipped.
+      const mask = seg.masks.get(s.mark);
+      if (mask) regions.push(mask);
+      regions.push(strokeHull(s, seg.width, seg.height, scale));
+      const gx = (x1 - x0) * 0.5, gy = (y1 - y0) * 0.5;
+      near.push([x0 - gx, y0 - gy, x1 + gx, y1 + gy]);
     } else {
       regions.push(seg.masks.get(s.mark) ?? strokeMask(s, seg.width, seg.height, scale));
       const gx = (x1 - x0) * 0.5, gy = (y1 - y0) * 0.5;
@@ -392,5 +432,5 @@ export function partsHint(strokes: Stroke[], parts: Part[], width: number, heigh
     return covered.length ? `- mark ${s.mark} is over: ${covered.join('; ')}` : '';
   });
   const text = lines.filter(Boolean).join('\n');
-  return text ? `\nNamed parts under the marks on the picture (found automatically, may be imperfect; use the names when they fit):\n${text}\n` : '';
+  return text ? `\nNamed parts under the marks on the picture (found automatically, may be imperfect; use the names when they fit). They say WHAT a mark is about, not that the mark only selects it: a mark over a part can still be a sketch of its new shape.\n${text}\n` : '';
 }

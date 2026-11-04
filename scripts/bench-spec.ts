@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildClip, locate, type Segment } from '../m0/clipkit.ts';
 import type { Stroke } from '../server/render.ts';
+import { imageIdOf, replay } from './replay.ts';
 
 const BASE = process.env.BASE ?? 'http://localhost:8787';
 const root = join(import.meta.dirname, '..');
@@ -66,9 +67,6 @@ async function loadClip(name: string): Promise<Clip> {
   return { image, strokes: c.strokes, wav: join(clipDir, `${name}.wav`), said: c.speech.map((s: any) => s.say).join(' ') };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
-const post = async (path: string, body: unknown) => (await fetch(BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
-
 // Character error rate, ignoring spaces and punctuation.
 function cer(said: string, heard: string) {
   const norm = (s: string) => s.replace(/[\s.,!?]/g, '');
@@ -79,54 +77,13 @@ function cer(said: string, heard: string) {
   return d[a.length][b.length] / Math.max(1, a.length);
 }
 
-const imageIds = new Map<string, string>();
-async function imageIdOf(path: string) {
-  if (!imageIds.has(path)) {
-    const { imageId } = await post('/api/images', { image: `data:image/png;base64,${readFileSync(path).toString('base64')}` });
-    await (await fetch(`${BASE}/api/images/${imageId}/parts`)).json(); // part names ready, as after a few seconds in the app
-    imageIds.set(path, imageId);
-  }
-  return imageIds.get(path)!;
-}
-
-async function replay(clip: Clip, speculate: boolean, keywords: boolean) {
-  const imageId = await imageIdOf(clip.image);
-  const wav = readFileSync(clip.wav);
-  const pcm = wav.subarray(44);
-  const audioMs = (pcm.length / 32000) * 1000;
-  const t0 = Date.now();
-  const asrId = (await post('/api/asr', keywords ? { imageIds: [imageId] } : {})).asrId;
-  const streamed = (async () => {
-    for (let off = 0, i = 0; off < pcm.length; off += 8000, i++) {
-      await sleep(i * 250 - (Date.now() - t0));
-      await fetch(`${BASE}/api/asr/${asrId}`, { method: 'POST', body: pcm.subarray(off, off + 8000) });
-    }
-  })();
-  const marks = clip.strokes.map((s) => ({ ...s, markId: '' }));
-  const markCalls = marks.map(async (s) => {
-    await sleep(s.points.at(-1)!.t - (Date.now() - t0));
-    s.markId = (await post('/api/marks', { imageId, stroke: { mark: s.mark, points: s.points } })).markId;
-  });
-  await sleep(audioMs + 300 - (Date.now() - t0));
-  const released = Date.now();
-  await Promise.all([...markCalls, streamed]);
-  const { id } = await post('/api/jobs', { imageId, strokes: marks, audio: `data:audio/wav;base64,${wav.toString('base64')}`, asrId, opts: { instant: true, speculate } });
-  let job: any;
-  for (;;) {
-    job = await (await fetch(`${BASE}/api/jobs/${id}`)).json();
-    if (job.error || job.stage === 'done') break;
-    await sleep(150);
-  }
-  return { id, job, total: Date.now() - released };
-}
-
 const speculate = process.env.SPECULATE !== '0';
 const keywords = process.env.KEYWORDS !== '0';
 const names = process.argv.slice(2).length ? process.argv.slice(2) : ['a', 'b', 'c', 'd', 'e', 'f', ...Object.keys(PART_CLIPS)];
 let right = 0, runs = 0;
 for (let run = 1; run <= Number(process.env.RUNS ?? 1); run++) for (const name of names) {
   const clip = await loadClip(name);
-  const r = await replay(clip, speculate, keywords);
+  const r = await replay(BASE, await imageIdOf(BASE, clip.image), clip.strokes, clip.wav, { speculate, keywords });
   const trace = r.job.error ? {} : await (await fetch(`${BASE}/api/jobs/${r.id}/trace.json`)).json();
   const heard = r.job.transcript ?? '';
   const e = cer(clip.said, heard);

@@ -83,7 +83,7 @@ With a stylus, finger touches on the image are ignored (palm rejection, the pen 
 - Muse Image runs with its tools off (image search, web search, shell): same quality and median (~9.8 s over 12 runs each), but no more slow tool-using calls (max 15.9 → 11.8 s). `reasoning_strength: low` on top halves input tokens but is no faster, and edits are billed per image.
 - Realtime transcription during recording: the transcript is ready 0.24–0.29 s after release instead of 1.0–1.6 s, and gives live captions.
 - Instant edits: recolor, tone and enlarge run locally (all-local edits ~6 s instead of 15–22 s). Moving or shrinking leaves a hole that a local fill could not make look right, so those still go to Muse Image.
-- Tried and left off: starting Muse Image speculatively from the transcript alone, in parallel with Spark (`SPECULATE=1`). It saved ~5 s (median 14.8 s vs 20.9 s) and guessed the mark mapping right 12/12 times, but it passes the transcript as is, so a misheard word ("시계" heard as "시기") gave a wrong edit in 3 of 4 runs, where Spark's reading was right.
+- Speculation (`SPECULATE`, now on by default, `SPECULATE=0` turns it off): Muse Image starts from the transcript alone, guessing that the n-th "this/that" goes with the n-th mark, while Spark checks the guess; a wrong guess falls back to Spark's reading. At first it passed a misheard word ("시계" heard as "시기") into the edit in 3 of 4 browser runs. See "Speculation, re-tested" below.
 
 ## Robustness
 
@@ -91,6 +91,25 @@ With a stylus, finger touches on the image are ignored (palm rejection, the pen 
 - The realtime transcription socket must open within 4 s, and the client waits at most 3 s for its last audio chunks; otherwise the recording is transcribed in one batch.
 - If an edit still fails, the canvas says "That edit didn't come through" with **Try again**. The marks stay on the picture, and the resend reuses what the server already understood (transcript and Spark's mapping), so it goes straight to Muse Image. The client also gives up on its own after 150 s, so it is never stuck "working".
 - Voice Transcribe is told the picture's part names as `keywords` (Korean and English, from the background parts pass; references included), so "브로치" or "머리핀" is heard as said.
+
+## Speculation, re-tested (`scripts/bench-spec.ts`)
+
+With the part names as Voice Transcribe keywords, a run counts as right when the speculative edit was taken and built from what was said:
+
+| | taken, right | skipped (fell back to Spark) | taken, wrong |
+|---|---|---|---|
+| replay, 10 clips that need Muse Image (desk a b c e; part words brooch pin cameo parasol sword star) | 9 | 1 | 0 |
+| browser, fake mic through the real client (a b c e brooch pin) | 5 | 1 | 0 |
+
+Strictly letter by letter the replay is 7/10: "카메오 브로치" came back as the English keyword "cameo brooch", and one word was echoed ("바꾸고, 바꾸고"), which the clause splitter drops; both edits were right. The skips: the ASR glued "저" to the next word, and in the browser "이 브로치는" was heard as "비브로 치는"; the clause count then didn't match the marks, so Spark (which heard "brooch") decided. Clips d and f are all instant edits, where speculation doesn't apply. Median release → result 18.3 s with speculation vs 20.2 s without on the same clips; Muse Image's own spread (12–45 s tonight, one 40 s deadline + retry in each mode) is larger than the saving. Speculation is skipped for Shape-pen marks and when the speech says 이렇게 / 이 모양 / like this, and a sketch in Spark's reading rejects it.
+
+## Drawing a new shape (`sketch` marks)
+
+A mark can select a thing or draw its new shape. Spark gives a mark kind `sketch` when the person says so (이렇게, 이 모양으로, like this) and the stroke is a deliberate contour rather than a loop around the object; the part names under a mark say what is being changed, not that the mark only selects it. For a sketch, Muse Image is told to reshape the target so its edge follows the line exactly, and gets the line alone (black on white, same size and place) as an extra image; the paste region is the old part's SAM mask plus the stroke's hull, so a larger new shape isn't clipped. Sketches never run as instant edits.
+
+The toolbar's **Point / Shape** toggle forces the intent (neither pressed = auto): a Shape-pen mark is always a sketch, a Point-pen mark never is.
+
+`scripts/bench-sketch.ts`: the knight's left pauldron redrawn as three spikes while saying "이 어깨갑주를 이렇게 뾰족하게 바꿔 줘". Before this change Spark called it an object mark ("make pointed") and Muse added one generic spike; now Spark picks `sketch` on its own (2/2 auto runs) and the result follows the drawn spikes (4/4 runs reshaped along the line; how tall the spikes come out varies by run). Results: `out/sketch/{old-auto,new-auto,new-shape,new-auto-2,new-shape-2}.jpg` (original | marks | result).
 
 ## Same model, different input (benchmark)
 

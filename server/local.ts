@@ -197,7 +197,7 @@ export async function applyLocal(image: Buffer, edits: Edit[], masks: Map<number
   const img: Rgb = { data, width: info.width, height: info.height };
   const done = new Set<number>();
   for (const e of edits) {
-    if (e.kind === 'pointer' || !e.op || !LOCAL_OPS.has(e.op) || skip.has(e.mark)) continue;
+    if (e.kind === 'pointer' || e.kind === 'sketch' || !e.op || !LOCAL_OPS.has(e.op) || skip.has(e.mark)) continue;
     const mask = masks.get(e.mark);
     if (!mask) continue;
     const alpha = await alphaOf(mask, img.width, img.height);

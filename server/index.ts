@@ -19,7 +19,7 @@ import { editImage, transcribe, type Mask, type Turn } from './meta.ts';
 import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
-import { audioDurationMs, maxVolumeDb, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
+import { audioDurationMs, maxVolumeDb, colorOf, composeWithRefs, cropAround, outlineImage, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -193,9 +193,12 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   // Speculation: start Muse Image as soon as the transcript is in, guessing
   // that the n-th "this/that" goes with the n-th mark. Spark then checks.
   let spec: { clauses: string[]; edited: Promise<Buffer> } | null = null;
-  if (opts.speculate && !prior?.edits && !refs.marks.length && !refs.pinned.length) {
+  // Not for Shape-pen marks: the spoken words alone don't say to follow a drawn outline.
+  if (opts.speculate && !prior?.edits && !refs.marks.length && !refs.pinned.length && !strokes.some((s) => s.pen === 'shape')) {
     const asrResult = await asr;
-    const clauses = asrResult ? splitClauses(asrResult.transcript, strokes.length) : null;
+    // "이렇게 / 이 모양으로 / like this" may mean a drawn shape: leave that to Spark.
+    const shapeWords = /이렇게|이런\s*(모양|식)|(이|저)\s*모양|모양으로|like this|this shape/i.test(asrResult?.transcript ?? '');
+    const clauses = asrResult && !shapeWords ? splitClauses(asrResult.transcript, strokes.length) : null;
     if (clauses) {
       const edited = T('muse edit (speculative)', async () => museEditSpoken(image, await guide, clauses, trace, opts.muse));
       edited.catch(() => {});
@@ -224,6 +227,12 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     job.via = 'transcript';
   }
   priors.set(job.id, { transcript: job.transcript, edits });
+  // The pen the user picked wins over Spark's reading.
+  for (const e of edits) {
+    const pen = strokes.find((s) => s.mark === e.mark)?.pen;
+    if (pen === 'shape') e.kind = 'sketch';
+    else if (pen === 'point' && e.kind === 'sketch') e.kind = 'object';
+  }
   const isRefMark = (mark: number) => refs.marks.some((m) => m.stroke.mark === mark);
   job.edits = edits.filter((e) => strokes.some((s) => s.mark === e.mark) || isRefMark(e.mark));
   writeFileSync(join(dir, 'edits.json'), JSON.stringify(job.edits, null, 2));
@@ -236,6 +245,11 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
       label: `the area marked ${stroke.mark} on a reference picture${refEdits.find((e) => e.mark === stroke.mark)?.target ? ` (${refEdits.find((e) => e.mark === stroke.mark)!.target})` : ''}`,
     })))),
     ...refs.pinned.map((p) => ({ image: p.png, label: 'a reference the user pinned (a character or style sheet): keep the character on-model and the style consistent with it' })),
+    // Each sketch alone, so its exact geometry is unmistakable.
+    ...(await Promise.all(edits.filter((e) => e.kind === 'sketch').map(async (e) => ({
+      image: await outlineImage(img.width, img.height, strokes.find((s) => s.mark === e.mark)!),
+      label: `line ${e.mark} alone, black on white at the same size and place as in the picture: the exact new outline for the ${e.target}`,
+    })))),
   ];
 
   const results = await Promise.all(markResults);
@@ -257,7 +271,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     // A local edit where a generative one may also change things (a recolored
     // mug with a plant drawn in front of it) would fight the paste: Muse Image
     // does both. Repeat, since a mark moved to Muse widens the generative area.
-    const isLocal = (e: Edit) => e.kind !== 'pointer' && !!e.op && LOCAL_OPS.has(e.op) && masks.has(e.mark);
+    const isLocal = (e: Edit) => e.kind !== 'pointer' && e.kind !== 'sketch' && !!e.op && LOCAL_OPS.has(e.op) && masks.has(e.mark);
     const toMuse = new Set<number>();
     for (let moved = true; moved; ) {
       moved = false;
@@ -286,7 +300,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
       return T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), toMuse, trace, opts.muse, extras));
     };
     let edited: Buffer;
-    if (spec && specMatches(spec.clauses, edits)) {
+    if (spec && !edits.some((e) => e.kind === 'sketch') && specMatches(spec.clauses, edits)) {
       job.speculation = 'right';
       // If the speculative call failed (a refusal, say), Spark's reading gets its own try.
       edited = await spec.edited.catch((e) => (console.warn(`[${job.id}] speculative edit failed, editing from Spark's reading:`, e.message), (job.speculation = 'failed'), museFromEdits()));
@@ -428,7 +442,7 @@ createServer(async (req, res) => {
       if (!img || !raw.length) return send(res, 400, { error: 'need an image and at least one mark on it' });
       const job: Job = { id: newId(), stage: 'understand', startedAt: Date.now() };
       jobs.set(job.id, job);
-      const strokes = raw.map(({ mark, points }) => scaleStroke({ mark, points }, img.k));
+      const strokes = raw.map(({ mark, points, pen }) => scaleStroke({ mark, points, ...(pen === 'shape' || pen === 'point' ? { pen } : {}) }, img.k));
       const refs: Refs = {
         marks: all.flatMap(({ mark, points, on }) => {
           const ref = on ? images.get(String(on)) : undefined;

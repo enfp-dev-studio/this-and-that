@@ -6,7 +6,8 @@ import sharp from 'sharp';
 import type { Mask } from './meta.ts';
 
 export type Point = { x: number; y: number; t: number }; // image pixels, ms since recording start
-export type Stroke = { mark: number; points: Point[] };
+// `pen`: the user's forced intent from the toolbar (Point or Shape); none = auto.
+export type Stroke = { mark: number; points: Point[]; pen?: 'point' | 'shape' };
 
 // Six, like the client's --mark-1..6; the models are told the colour names.
 export const COLORS = ['#ff3b30', '#0a84ff', '#34c759', '#ff9f0a', '#bf5af2', '#ff2d95'];
@@ -44,6 +45,15 @@ export function strokesSvg(strokes: Stroke[], w: number, h: number, scale = 1, u
   }
   if (cursor && tip) parts.push(`<circle cx="${tip.x * scale}" cy="${tip.y * scale}" r="${unit * 1.4}" fill="white" stroke="black" stroke-width="${unit * 0.3}"/>`);
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${parts.join('')}</svg>`);
+}
+
+// A sketch mark alone, black on white at the picture's size and place: the
+// new outline Muse Image is asked to follow.
+export async function outlineImage(width: number, height: number, s: Stroke) {
+  const unit = Math.max(width, height) / 220;
+  const d = s.points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="white"/><path d="${d}" fill="none" stroke="black" stroke-width="${unit}" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  return sharp(Buffer.from(svg)).jpeg({ quality: 90 }).toBuffer();
 }
 
 // Full-size image with all marks drawn on it, for Muse Image.

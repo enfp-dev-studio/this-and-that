@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CloudOff, Loader2, Mic, MicOff, RotateCcw, Zap } from 'lucide-react';
+import { CloudOff, Loader2, Mic, MicOff, PenTool, RotateCcw, Zap } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
@@ -87,12 +87,14 @@ export function Callouts() {
               <Badge variant="secondary" className="absolute max-w-(--callout-width) -translate-y-1/2 shadow-lg" style={{ left: at.x, top: at.y }}>
                 <MarkBadge mark={e.mark} />
                 {s.localMarks.includes(e.mark) && <Zap />}
+                {e.kind === 'sketch' && <PenTool />}
                 <span className="truncate">{text}</span>
               </Badge>
             </TooltipTrigger>
             <TooltipContent>
               {e.target}: {e.instruction}
               {s.localMarks.includes(e.mark) ? ' (instant)' : ''}
+              {e.kind === 'sketch' ? ' (follows the drawn shape)' : ''}
             </TooltipContent>
           </Tooltip>
         );
