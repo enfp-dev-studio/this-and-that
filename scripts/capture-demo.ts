@@ -477,18 +477,31 @@ function swordSteps([x0, y0, z0]: number[], [x1, y1, z1]: number[]): Steps {
   ];
 }
 
-async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword' = 'helmet') {
+// The low-poly sword (Quaternius, 0.9 m, blade ~9 cm wide, guard near 0.3 m):
+// a wider, swept guard across the old one, then flames up the blade's edge.
+function lowSwordSteps([x0, y0, z0]: number[], [x1, y1, z1]: number[]): Steps {
+  const cz = (z0 + z1) / 2, h = y1 - y0;
+  const at = (x: number, y: number) => [x, y0 + y, cz];
+  const guard = [[-0.21, 0.37], [-0.15, 0.31], [-0.07, 0.29], [0, 0.292], [0.07, 0.29], [0.15, 0.31], [0.21, 0.37]].map(([x, y]) => at(x, y * (h / 0.9)));
+  const flame = [[0.045, 0.36], [0.105, 0.43], [0.07, 0.46], [0.125, 0.55], [0.08, 0.58], [0.135, 0.68], [0.075, 0.71], [0.105, 0.8], [0.055, 0.84], [0.045, 0.7], [0.045, 0.5], [0.045, 0.37]].map(([x, y]) => at(x, y * (h / 0.9)));
+  return [
+    { say: 'Make the guard this shape.', draw: [['front', [guard]]] },
+    { say: 'Add flames along this edge, like this.', draw: [['front', [flame]]] },
+  ];
+}
+
+async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword' | 'lowsword' = 'helmet') {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.locator('[role=radio][aria-label="3D"]').click();
   await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
   await sleep(1200);
-  const name = which === 'sword' ? 'sword' : 'model3d';
+  const name = which === 'helmet' ? 'model3d' : which;
   await rec.start(name);
   await sleep(600);
   const voiceAt = Date.now() / 1000;
   await page.locator('button:has-text("Open")').click();
   await sleep(500);
-  await page.locator(`text=Sample model: a ${which === 'sword' ? 'sword' : 'sci-fi helmet'}`).click();
+  await page.locator(`text=Sample model: a ${{ sword: 'sword', lowsword: 'low-poly sword', helmet: 'sci-fi helmet' }[which]}`).click();
   await page.waitForFunction(() => (window as any).stage?.model.children.some((c: any) => c.type === 'Group' && c.children.length), undefined, { timeout: 30_000 });
   await sleep(800);
   // Framed close, turning a moment.
@@ -497,7 +510,7 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
     const b = new THREE.Box3().setFromObject(stage.model);
     const c = b.getCenter(new THREE.Vector3());
     stage.controls.target.set(c.x, c.y + 0.08, c.z);
-    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(2.5 * (b.max.y - b.min.y));
+    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(2.2 * (b.max.y - b.min.y));
     stage.camera.position.copy(stage.controls.target).add(d);
     Object.assign(stage.controls, { autoRotate: true, autoRotateSpeed: 2.2 });
     stage.controls.update();
@@ -511,7 +524,9 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
   const steps: Steps =
     which === 'sword'
       ? swordSteps(bb.min, bb.max)
-      : [
+      : which === 'lowsword'
+        ? lowSwordSteps(bb.min, bb.max)
+        : [
           { say: 'Add horns like this.', draw: [['front', horns]] },
           { say: 'Add wings here.', draw: [['side', [wing]]] },
         ];
@@ -750,6 +765,7 @@ for (const name of wanted) {
     else if (name === 'helmet') results[name] = await sceneHelmet(page, rec);
     else if (name === 'model3d') results[name] = await sceneModel3d(page, rec);
     else if (name === 'sword') results[name] = await sceneModel3d(page, rec, 'sword');
+    else if (name === 'lowsword') results[name] = await sceneModel3d(page, rec, 'lowsword');
     else if (name === 'emblem3d') results[name] = await sceneEmblem3d(page, rec);
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {

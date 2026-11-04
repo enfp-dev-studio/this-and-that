@@ -570,7 +570,7 @@ await card([{ text: 'The same gesture, on a 3D model.', size: 72, weight: 600 },
 // A detailed model opened (a sample model: the sword, else the helmet), parts
 // drawn on it and said: they follow the strokes. No paint: it would repaint the
 // model's own textures.
-const take3d = existsSync(join(demo, 'sword.timing.json')) ? 'sword' : 'model3d';
+const take3d = ['lowsword', 'sword', 'model3d'].find((n) => existsSync(join(demo, `${n}.timing.json`)))!;
 if (existsSync(join(demo, `${take3d}.timing.json`))) {
   const t = timing(take3d);
   const steps = t.steps!;
@@ -582,7 +582,7 @@ if (existsSync(join(demo, `${take3d}.timing.json`))) {
     at = st.done + 1.1;
   }
   segs.push({ from: at, to: Math.min(t.paint! - 0.6, at + 3.2) });
-  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, note: 'Strokes on a 3D model become parts that follow the drawn curve.' });
+  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, note: 'Strokes on a 3D model become parts that follow the drawn curve, in its low-poly style.' });
 }
 // A surface edit on the opened helmet: drawn and said, the result baked into its
 // textures, held from that view, then turned: it stays on the surface.
@@ -600,7 +600,7 @@ await card(
     { text: 'Show it. Say it. Done.', size: 46, color: gray, gap: 44 },
     { text: 'Built with Meta’s Muse models', size: 38, color: gray },
     { text: 'github.com/enfp-dev-studio/this-and-that', size: 38, color: gray },
-    { text: '3D sample models, CC0: “Antique Estoc” by Ulan Cabanilla and James Ray Cock (Poly Haven); “SciFiHelmet” by Michael Pavlovic (Khronos glTF Sample Assets)', size: 24, color: gray, gap: 28 },
+    { text: `3D sample models, CC0: ${take3d === 'lowsword' ? '“Sword” by Quaternius (Poly Pizza)' : '“Antique Estoc” by Ulan Cabanilla and James Ray Cock (Poly Haven)'}; “SciFiHelmet” by Michael Pavlovic (Khronos glTF Sample Assets)`, size: 24, color: gray, gap: 28 },
   ],
   6,
 );
