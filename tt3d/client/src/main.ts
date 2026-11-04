@@ -1,0 +1,352 @@
+import * as THREE from 'three';
+import { Builder, type Part } from './build';
+import { Stage } from './scene';
+import { Sketch, type Stroke } from './sketch';
+import { renderViews, strokeColor, type View } from './views';
+import { Voice } from './voice';
+import { applyPaint, renderModel } from './paint';
+import { penStroke, screenOf } from './replay';
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+
+const stage = new Stage($('stage'));
+const sketch = new Sketch(stage);
+const builder = new Builder(stage);
+const caption = $('caption');
+const statusEl = $('status');
+const typed = $<HTMLInputElement>('typed');
+const talk = $('talk');
+let busy = false;
+
+const status = (text: string, working = false) => {
+  statusEl.textContent = text;
+  statusEl.classList.toggle('busy', working);
+};
+
+// ── toolbar ────────────────────────────────────────────────────────────────
+document.querySelectorAll<HTMLButtonElement>('#views button').forEach((b) => b.addEventListener('click', () => stage.goTo(b.dataset.view as any)));
+document.querySelectorAll<HTMLButtonElement>('#planes button').forEach((b) =>
+  b.addEventListener('click', () => {
+    sketch.mode = b.dataset.plane as any;
+    document.querySelectorAll('#planes button').forEach((x) => x.classList.toggle('on', x === b));
+  }),
+);
+$('undo').addEventListener('click', () => undo());
+$('clear').addEventListener('click', () => {
+  sketch.clear();
+  builder.clear();
+  builds.length = 0;
+  sketch.round = 1;
+  $('result').hidden = true;
+  $('strip').innerHTML = '';
+  caption.textContent = '';
+  status('펜/왼쪽 버튼으로 그리고, 마이크를 누른 채 말하세요');
+});
+const SHAPE_KO = { line: '직선', circle: '원', ellipse: '타원', arc: '호', arrow: '화살표' };
+sketch.onSnap = (kind) => status(`QuickShape: ${SHAPE_KO[kind]}으로 맞췄어요 · 되돌리기 하면 그린 그대로`);
+let sketchVisible = true;
+$('toggle-sketch').addEventListener('click', () => sketch.setVisible((sketchVisible = !sketchVisible)));
+
+// ── talk: hold (or tap to toggle), or hold Space ──────────────────────────
+const voice = new Voice((text) => (caption.textContent = text));
+let pressedAt = 0;
+let toggled = false;
+
+async function startTalk() {
+  if (voice.recording || busy) return;
+  talk.classList.add('rec');
+  caption.textContent = '';
+  status('듣는 중… 그리면서 말하세요');
+  try {
+    await voice.start();
+  } catch (e) {
+    talk.classList.remove('rec');
+    status(`마이크를 열 수 없어요: ${e}`);
+  }
+}
+
+async function stopTalk() {
+  if (!voice.recording) return;
+  talk.classList.remove('rec');
+  status('받아쓰는 중…', true);
+  const r = await voice.stop().catch(() => ({ text: '', via: 'error', ms: 0 }));
+  const text = [r.text, typed.value].filter(Boolean).join(' ');
+  caption.textContent = text ? `“${text}”` : '';
+  typed.value = '';
+  await perceive(text);
+}
+
+talk.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (toggled) {
+    toggled = false;
+    stopTalk();
+    return;
+  }
+  pressedAt = performance.now();
+  startTalk();
+});
+const release = () => {
+  if (!voice.recording || toggled) return;
+  if (performance.now() - pressedAt < 300) toggled = true; // a tap: keep listening until the next tap
+  else stopTalk();
+};
+talk.addEventListener('pointerup', release);
+talk.addEventListener('pointercancel', release);
+
+addEventListener('keydown', (e) => {
+  if (e.target === typed) {
+    if (e.key === 'Enter') make();
+    return;
+  }
+  if (e.code === 'Space' && !e.repeat) (e.preventDefault(), startTalk());
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z') undo();
+  if (e.key === 'Enter') make();
+});
+addEventListener('keyup', (e) => {
+  if (e.code !== 'Space' || e.target === typed) return;
+  e.preventDefault(); // a focused toolbar button must not get clicked
+  stopTalk();
+});
+// Toolbar buttons give the focus back, so Space and Enter stay app shortcuts.
+document.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => b.blur()));
+// After a build the model turns slowly until the user touches the scene.
+stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
+$('make').addEventListener('click', () => make());
+
+function make() {
+  const text = typed.value.trim();
+  typed.value = '';
+  if (text) caption.textContent = `“${text}”`;
+  perceive(text);
+}
+
+// ── undo: strokes of this round first, then whole builds ───────────────────
+const builds: { parts: Part[]; transcript: string }[] = [];
+function undoBuild() {
+  const b = builds.pop();
+  if (!b) return null;
+  if (b.parts.length) builder.apply(b.parts, sketch.strokes);
+  else builder.clear();
+  sketch.unsettle();
+  stage.controls.autoRotate = false;
+  $('result').hidden = true;
+  return b;
+}
+function undo() {
+  if (busy) return;
+  if (sketch.current().length) sketch.undo();
+  else undoBuild();
+}
+// Same strokes and words, a fresh answer.
+$('reroll').addEventListener('click', () => {
+  if (busy) return;
+  const b = undoBuild();
+  if (b) perceive(b.transcript);
+});
+
+// ── paint: Muse Image repaints the current view, projected back on ─────────
+let subject = '';
+$('paint').addEventListener('click', async () => {
+  if (busy || !builder.parts.length) return;
+  busy = true;
+  stage.controls.autoRotate = false;
+  status('Muse Image가 지금 보는 방향에서 모델을 칠하는 중…', true);
+  const style = typed.value.trim();
+  typed.value = '';
+  try {
+    builder.finish();
+    const { image, mask, cam } = renderModel(stage);
+    const res = await fetch('/api/paint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, subject, style }) });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error);
+    await applyPaint(stage, r.image, cam, mask);
+    const strip = $('strip');
+    strip.insertAdjacentHTML('afterbegin', `<figure><img src="${r.image}"><figcaption>MUSE IMAGE</figcaption></figure>`);
+    status(`Muse Image ${(r.ms / 1000).toFixed(1)} s · 칠한 방향에서 볼 때 가장 좋아요`);
+  } catch (e) {
+    status(`칠하기 실패: ${String(e).slice(0, 160)}`);
+  } finally {
+    busy = false;
+  }
+});
+
+// ── perceive → build ───────────────────────────────────────────────────────
+function strokeInfo(s: Stroke) {
+  const box = new THREE.Box3().setFromPoints(s.points);
+  const n = Math.min(8, s.points.length);
+  const points = Array.from({ length: n }, (_, i) => s.points[Math.round((i * (s.points.length - 1)) / Math.max(1, n - 1))].toArray());
+  return { id: s.id, color: strokeColor(s.id), drawnFrom: s.viewDir.toArray(), plane: s.plane, bbox: { min: box.min.toArray(), max: box.max.toArray() }, points, closed: s.closed };
+}
+
+function showStrip(views: View[], thinking: boolean) {
+  const strip = $('strip');
+  strip.innerHTML = views.map((v, i) => `<figure style="animation-delay:${i * 60}ms"><img src="${v.image}"><figcaption>${v.name}</figcaption></figure>`).join('');
+  strip.classList.toggle('thinking', thinking);
+}
+
+function showResult(subject: string, say: string, parts: Part[], ms: number) {
+  $('result').hidden = false;
+  $('say').textContent = say || subject;
+  $('chips').innerHTML = parts.map((p) => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join('') + `<span>Muse Spark ${(ms / 1000).toFixed(1)} s</span>`;
+}
+
+async function perceive(transcript: string) {
+  if (busy) return;
+  const editing = builder.parts.length > 0;
+  const strokes = editing ? sketch.current() : sketch.strokes;
+  if (!strokes.length && !(editing && transcript)) {
+    status('먼저 그려 주세요');
+    return;
+  }
+  busy = true;
+  const before = builder.parts;
+  status('Muse Spark가 여러 방향에서 스케치를 보는 중…', true);
+  builder.finish();
+  const views = renderViews(stage, strokes, { withModel: editing });
+  showStrip(views, true);
+  // The strokes Spark is looking at pulse until the answer is in.
+  const pulse = (now: number) => {
+    if (!busy || builder.parts !== before) return;
+    for (const s of strokes) (s.line.material as any).opacity = 0.55 + 0.45 * Math.cos(now / 180);
+  };
+  stage.onTick(pulse);
+  try {
+    const res = await fetch('/api/perceive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ views, transcript, strokes: strokes.map(strokeInfo), parts: builder.parts }),
+    });
+    if (!res.ok || !res.body) throw new Error(await res.text());
+    // NDJSON: parts arrive one by one while Spark writes them.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const got: Part[] = [];
+    let buf = '';
+    let said = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const ev = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (ev.type === 'say') said = ev.say;
+        if (ev.type === 'part') {
+          got.push(ev.part);
+          builder.apply(got, sketch.strokes, true);
+          status(`만드는 중… ${got.map((p) => p.name).join(', ')}`, true);
+        }
+        if (ev.type === 'error') throw new Error(ev.error);
+        if (ev.type === 'done') {
+          const a = ev.answer;
+          subject = a.subject;
+          builds.push({ parts: before, transcript });
+          builder.apply(a.parts, sketch.strokes);
+          sketch.settle();
+          stage.controls.autoRotateSpeed = 1.6;
+          stage.controls.autoRotate = true;
+          showResult(a.subject, a.say || said, a.parts, ev.ms);
+          status(`${a.subject} · ${a.parts.length}개 부품 · 첫 부품 ${(ev.firstMs / 1000).toFixed(1)} s · 그리고 말해서 고칠 수 있어요`);
+          (window as any).last = ev;
+        }
+      }
+    }
+  } catch (e) {
+    status(`실패: ${String(e).slice(0, 160)}`);
+  } finally {
+    busy = false;
+    stage.offTick(pulse);
+    if (builder.parts === before) for (const s of strokes) (s.line.material as any).opacity = 1; // failed: strokes stay current
+    $('strip').classList.remove('thinking');
+  }
+}
+
+// ── scripted sketches for testing without a pen ────────────────────────────
+const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+function path(pts: THREE.Vector3[], jitter = 0.006) {
+  const out: THREE.Vector3[] = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const steps = Math.max(4, Math.round(pts[i].distanceTo(pts[i + 1]) / 0.03));
+    for (let k = 0; k < steps; k++) out.push(pts[i].clone().lerp(pts[i + 1], k / steps).add(V((Math.random() - 0.5) * jitter, (Math.random() - 0.5) * jitter, 0)));
+  }
+  out.push(pts[pts.length - 1].clone());
+  return out;
+}
+const FRONT = V(0, 0, -1), SIDE = V(-1, 0, 0);
+function demoChair() {
+  const f = (pts: THREE.Vector3[]) => sketch.addStroke(path(pts), { viewDir: FRONT });
+  const s = (pts: THREE.Vector3[]) => sketch.addStroke(path(pts), { viewDir: SIDE });
+  f([V(-0.25, 0.45, 0), V(0.25, 0.45, 0)]);
+  f([V(-0.23, 0.45, 0), V(-0.23, 0, 0)]);
+  f([V(0.23, 0.45, 0), V(0.23, 0, 0)]);
+  f([V(-0.23, 0.5, 0), V(-0.23, 0.95, 0), V(0.23, 0.95, 0), V(0.23, 0.5, 0)]);
+  s([V(0, 0.45, 0.22), V(0, 0.45, -0.22)]);
+  s([V(0, 0.45, 0.2), V(0, 0, 0.2)]);
+  s([V(0, 0, -0.2), V(0, 0.45, -0.2), V(0, 0.95, -0.27)]);
+}
+function demoHouse() {
+  const f = (pts: THREE.Vector3[], closed = false) => sketch.addStroke(path(pts), { viewDir: FRONT, closed });
+  const s = (pts: THREE.Vector3[]) => sketch.addStroke(path(pts), { viewDir: SIDE });
+  f([V(-0.4, 0, 0), V(-0.4, 0.5, 0), V(0, 0.85, 0), V(0.4, 0.5, 0), V(0.4, 0, 0), V(-0.4, 0, 0)], true);
+  f([V(-0.08, 0, 0), V(-0.08, 0.28, 0), V(0.08, 0.28, 0), V(0.08, 0, 0)]);
+  f([V(0.18, 0.75, 0), V(0.18, 0.95, 0), V(0.28, 0.95, 0), V(0.28, 0.66, 0)]);
+  s([V(0, 0.5, 0.4), V(0, 0.5, -0.4), V(0, 0, -0.4)]);
+  s([V(0, 0.85, 0.45), V(0, 0.85, -0.45)]);
+}
+
+// The chair drawn with pen events from the front, then the side, while the
+// caption shows what would be said; then the usual build.
+async function replayChair(say = '의자야, 등받이는 이렇게') {
+  const at = (x: number, y: number, z: number) => screenOf(stage, x, y, z);
+  const settle = async (view: 'front' | 'side' | 'three') => {
+    // Glide when frames are running; snap in a hidden or throttled tab.
+    const f0 = stage.frames;
+    await new Promise((r) => setTimeout(r, 100));
+    stage.goTo(view, stage.frames - f0 < 4);
+    await new Promise((r) => setTimeout(r, 650));
+  };
+  $('clear').click();
+  await settle('front');
+  caption.textContent = say.split(',')[0];
+  await penStroke(stage, [at(-0.26, 0.45, 0), at(0.26, 0.46, 0)]);
+  await penStroke(stage, [at(-0.23, 0.44, 0), at(-0.235, 0.0, 0)]);
+  await penStroke(stage, [at(0.23, 0.44, 0), at(0.225, 0.0, 0)]);
+  await penStroke(stage, [at(-0.22, 0.47, 0), at(-0.21, 0.95, 0), at(0.21, 0.96, 0), at(0.22, 0.47, 0)], 900);
+  await settle('side');
+  caption.textContent = say;
+  await penStroke(stage, [at(0, 0.45, 0.22), at(0, 0.45, -0.22)]);
+  await penStroke(stage, [at(0, 0.44, 0.2), at(0, 0.0, 0.2)]);
+  await penStroke(stage, [at(0, 0.0, -0.2), at(0, 0.45, -0.2), at(0, 0.95, -0.3)], 800);
+  await settle('three');
+  caption.textContent = `“${say}”`;
+  await perceive(say);
+}
+
+// QuickShape before/after: the same wobbly shapes drawn twice, lifted at once
+// (top row, stays as drawn) and held still before lifting (bottom row, snapped).
+async function quickShapeDemo() {
+  $('clear').click();
+  stage.goTo('front', true);
+  const r = stage.renderer.domElement.getBoundingClientRect();
+  const sz = r.width * 0.06;
+  const row = (y: number): [number, number][][] => {
+    const cx = (k: number) => r.left + r.width * (0.2 + 0.15 * k);
+    const ring = (x: number, rx: number, ry: number, a0: number, a1: number) => Array.from({ length: 40 }, (_, i) => [x + rx * Math.cos(a0 + ((a1 - a0) * i) / 39), y + ry * Math.sin(a0 + ((a1 - a0) * i) / 39)] as [number, number]);
+    const x4 = cx(4);
+    return [
+      [[cx(0) - sz, y + sz * 0.6], [cx(0) + sz, y - sz * 0.6]],
+      ring(cx(1), sz, sz, 0, 2.05 * Math.PI),
+      ring(cx(2), sz * 1.15, sz * 0.6, 0.3, 0.3 + 2.03 * Math.PI),
+      ring(cx(3), sz, sz, 0.9 * Math.PI, 2.1 * Math.PI),
+      [[x4 - sz, y + sz * 0.4], [x4 + sz, y - sz * 0.4], [x4 + sz * 0.55, y - sz * 0.45], [x4 + sz, y - sz * 0.4], [x4 + sz * 0.75, y + sz * 0.02]],
+    ];
+  };
+  const top = r.top + r.height * 0.3, bottom = r.top + r.height * 0.58;
+  for (const pts of row(top)) await penStroke(stage, pts, 450, 7, { wobble: 3.5 });
+  for (const pts of row(bottom)) await penStroke(stage, pts, 450, 7, { wobble: 3.5, holdMs: 550 });
+  return sketch.strokes.map((s) => s.shape ?? 'as drawn');
+}
+
+Object.assign(window, { THREE, stage, sketch, builder, perceive, demoChair, demoHouse, replayChair, quickShapeDemo });

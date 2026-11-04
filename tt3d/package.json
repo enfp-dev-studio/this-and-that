@@ -1,0 +1,20 @@
+{
+  "name": "tt3d",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "node --env-file-if-exists=.env server/index.ts",
+    "build": "vite build",
+    "start": "vite build && PORT=5185 node --env-file-if-exists=.env server/index.ts"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/three": "^0.187.0",
+    "typescript": "5.9",
+    "vite": "^7.3.7"
+  }
+}
