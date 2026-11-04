@@ -4,6 +4,7 @@
 
 import OpenAI from 'openai';
 import { buildObjectPrompt, decodeMaskToRaster, parseImageStream, recordsOfKind } from '@meta-sam/parser';
+import type { Trace } from './trace.ts';
 
 const BASE_URL = 'https://api.meta.ai/v1';
 export const MODELS = {
@@ -26,6 +27,8 @@ export async function sparkJson<T>(opts: {
   model?: string;
   effort?: string;
   system?: string;
+  trace?: Trace;
+  label?: string;
 }): Promise<T> {
   const messages: any[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
@@ -36,6 +39,7 @@ export async function sparkJson<T>(opts: {
     messages,
     response_format: { type: 'json_schema', json_schema: { name: 'Answer', schema: opts.schema } },
   } as any);
+  opts.trace?.addUsage(opts.label ?? 'spark', r.usage);
   return JSON.parse(r.choices[0].message.content ?? '{}');
 }
 
@@ -48,7 +52,7 @@ export type SamObject = { id: number; box?: Box; points?: { x: number; y: number
 export type Mask = { width: number; height: number; data: Uint8Array };
 
 // Segment the objects named by boxes/points in one SAM call.
-export async function samObjects(image: Buffer, width: number, height: number, objects: SamObject[]): Promise<Map<number, Mask>> {
+export async function samObjects(image: Buffer, width: number, height: number, objects: SamObject[], trace?: Trace, label = 'sam'): Promise<Map<number, Mask>> {
   const text = buildObjectPrompt({
     size: { width, height },
     objects: objects.map((o) => ({
@@ -62,7 +66,14 @@ export async function samObjects(image: Buffer, width: number, height: number, o
     stream: true,
     metadata: { mask_encoding: 'one_bit' },
   } as any);
-  const result = await parseImageStream(events as any).finalResult;
+  // Pass the events through to the parser, keeping the usage from the last one.
+  async function* tap() {
+    for await (const ev of events as any) {
+      if (ev.type === 'response.completed') trace?.addUsage(label, ev.response?.usage);
+      yield ev;
+    }
+  }
+  const result = await parseImageStream(tap() as any).finalResult;
   const masks = new Map<number, Mask>();
   for (const rec of recordsOfKind(result.records, 'mask')) {
     const id = Number(rec.objectId);
@@ -83,7 +94,7 @@ export async function samObjects(image: Buffer, width: number, height: number, o
   return masks;
 }
 
-async function imagesCall(path: string, body: object): Promise<Buffer> {
+async function imagesCall(path: string, body: object, trace?: Trace): Promise<Buffer> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -91,17 +102,20 @@ async function imagesCall(path: string, body: object): Promise<Buffer> {
   });
   const json: any = await res.json();
   if (!res.ok) throw new Error(`Muse Image ${path}: HTTP ${res.status}: ${JSON.stringify(json)}`);
+  trace?.addUsage(`image${path.replace('/images/', ' ')}`, json.usage);
   return Buffer.from(json.data[0].b64_json, 'base64');
 }
 
 export const generateImage = (prompt: string, size?: string) => imagesCall('/images/generations', { prompt, ...(size ? { size } : {}) });
 
-export const editImage = (prompt: string, images: Buffer[], size: string) =>
-  imagesCall('/images/edits', { prompt, size, images: images.map((b) => ({ image_url: dataUrl(b, 'image/png') })) });
+export const editImage = (prompt: string, images: Buffer[], size: string, trace?: Trace, extra: object = {}) =>
+  imagesCall('/images/edits', { prompt, size, images: images.map((b) => ({ image_url: dataUrl(b, mimeOf(b)) })), ...extra }, trace);
+
+const mimeOf = (b: Buffer) => (b[0] === 0xff && b[1] === 0xd8 ? 'image/jpeg' : 'image/png');
 
 export type Turn = { transcript: string; startMs: number; endMs: number };
 // Korean-biased transcription of a 16 kHz mono WAV.
-export async function transcribe(wav: Buffer): Promise<{ transcript: string; turns: Turn[] }> {
+export async function transcribe(wav: Buffer, trace?: Trace): Promise<{ transcript: string; turns: Turn[] }> {
   const request = { model: MODELS.transcribe, audioEncoding: 'WAV', mode: 'DIARIZATION', languageBias: ['Korean'] };
   const form = new FormData();
   form.append('request', new Blob([JSON.stringify(request)], { type: 'application/json' }));
@@ -114,5 +128,6 @@ export async function transcribe(wav: Buffer): Promise<{ transcript: string; tur
   const text = await res.text();
   if (!res.ok) throw new Error(`transcribe: HTTP ${res.status}: ${text}`);
   const json = JSON.parse(text);
+  trace?.addUsage('transcribe', json.usage ?? { audioDurationMs: json.audioDurationMs });
   return { transcript: json.transcript ?? '', turns: json.turns ?? [] };
 }

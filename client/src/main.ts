@@ -1,13 +1,23 @@
-// This & That client: draw numbered marks on the image while talking, send the
-// image + stroke log + voice to the server, show progress and a before/after.
+// This & That client: draw numbered marks on the image while talking. Each
+// mark goes to the server when its stroke ends, so SAM outlines it while you
+// are still talking; on release the voice follows and the edit runs.
 
 type Point = { x: number; y: number; t: number };
-type Stroke = { mark: number; points: Point[] };
-type Edit = { mark: number; target: string; instruction: string };
-type Job = { stage: string; transcript?: string; edits?: Edit[]; error?: string; elapsedMs: number };
+type Stroke = {
+  mark: number;
+  points: Point[];
+  markId?: string; // SAM request for this mark, sent when the stroke ends
+  mask?: HTMLImageElement; // SAM's outline of what the mark points at
+  samDone?: boolean;
+  pointer?: boolean; // Spark says it is an arrow/direction, not an object
+};
+type Edit = { mark: number; kind?: string; target: string; instruction: string };
+type Job = { stage: string; transcript?: string; edits?: Edit[]; error?: string; resultImageId?: string; elapsedMs: number };
+type Version = { url: string; imageId: Promise<string> };
 
 const COLORS = ['#ff3b30', '#0a84ff', '#34c759', '#ff9f0a', '#bf5af2', '#ff2d95', '#64d2ff', '#ffd60a'];
 const colorOf = (mark: number) => COLORS[(mark - 1) % COLORS.length];
+const IDLE_LABEL = 'Hold or tap, then draw and talk';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('canvas');
@@ -22,8 +32,8 @@ const review = $('review');
 const compare = $('compare');
 
 let image: HTMLImageElement | null = null;
-let imageUrl = ''; // data URL of the current image
-const versions: string[] = []; // earlier images, for Undo
+let current: Version | null = null;
+const versions: Version[] = []; // earlier images, for Undo
 let strokes: Stroke[] = [];
 let drawing: Stroke | null = null;
 let penSeen = false;
@@ -35,23 +45,33 @@ let t0 = 0;
 let state: 'idle' | 'recording' | 'processing' | 'review' = 'idle';
 let micStream: MediaStream | null = null;
 
+const postJson = async (path: string, body: unknown) => {
+  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const json = await res.json();
+  if (!res.ok || json.error) throw new Error(json.error ?? `HTTP ${res.status}`);
+  return json;
+};
+
 // ---------- image ----------
 
-async function setImage(url: string, keepHistory = true) {
+// Show an image and make it the one to edit. A new image is uploaded once;
+// results already live on the server and come with their id.
+async function setImage(url: string, imageId?: Promise<string>, keepHistory = true) {
   const img = new Image();
   img.src = url;
   await img.decode();
-  if (keepHistory && imageUrl) versions.push(imageUrl);
+  if (keepHistory && current) versions.push(current);
   image = img;
-  imageUrl = url.startsWith('data:') ? url : await toDataUrl(url);
+  current = { url, imageId: imageId ?? upload(url) };
+  current.imageId.catch((e) => showError(`upload failed: ${e.message}`));
   strokes = [];
   $('empty').hidden = true;
   draw();
 }
 
-async function toDataUrl(url: string) {
-  const blob = await (await fetch(url)).blob();
-  return blobToDataUrl(blob);
+async function upload(url: string) {
+  const dataUrl = url.startsWith('data:') ? url : await blobToDataUrl(await (await fetch(url)).blob());
+  return (await postJson('/api/images', { image: dataUrl })).imageId as string;
 }
 
 const blobToDataUrl = (blob: Blob) =>
@@ -77,13 +97,17 @@ stage.addEventListener('drop', async (e) => {
   if (file?.type.startsWith('image/')) await setImage(await blobToDataUrl(file));
 });
 $('clear').addEventListener('click', () => {
+  if (state === 'processing') return;
   if (state === 'recording') cancelRecording();
   strokes = [];
   draw();
 });
 $('undo').addEventListener('click', async () => {
+  if (state === 'processing' || state === 'recording') return;
+  if (state === 'review') closeReview();
   const prev = versions.pop();
-  if (prev && state !== 'processing') await setImage(prev, false);
+  if (prev) await setImage(prev.url, prev.imageId, false);
+  resetPanel();
 });
 
 // ---------- canvas ----------
@@ -99,26 +123,65 @@ function fitRect() {
   return { x: (w - iw) / 2, y: (h - ih) / 2, w: iw, h: ih, k };
 }
 
+// Offscreen canvas for the "working on it" sheen, clipped to the masks.
+const sheen = document.createElement('canvas');
+const sheenCtx = sheen.getContext('2d')!;
+
 function draw() {
   const dpr = devicePixelRatio || 1;
-  canvas.width = stage.clientWidth * dpr;
-  canvas.height = stage.clientHeight * dpr;
+  const cw = Math.round(stage.clientWidth * dpr);
+  const ch = Math.round(stage.clientHeight * dpr);
+  if (canvas.width !== cw || canvas.height !== ch) [canvas.width, canvas.height] = [cw, ch];
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!image) return;
   const r = fitRect();
   ctx.drawImage(image, r.x, r.y, r.w, r.h);
+
+  // SAM masks: a tint in the mark's colour, plus a moving sheen while the edit runs.
+  const masks = strokes.filter((s) => s.mask && !s.pointer);
+  if (masks.length) {
+    ctx.globalAlpha = state === 'processing' ? 0.28 : 0.38;
+    for (const s of masks) ctx.drawImage(s.mask!, r.x, r.y, r.w, r.h);
+    ctx.globalAlpha = 1;
+    if (state === 'processing') drawSheen(masks, r);
+  }
+
   ctx.save();
   ctx.translate(r.x, r.y);
   ctx.scale(r.k, r.k);
   const unit = Math.max(image.naturalWidth, image.naturalHeight) / 160;
-  for (const s of strokes) drawStroke(s, unit);
+  for (const s of strokes) drawStroke(s, unit, state === 'processing' ? 0.55 : 1);
   ctx.restore();
 }
 
+function drawSheen(masks: Stroke[], r: ReturnType<typeof fitRect>) {
+  sheen.width = Math.max(1, Math.round(r.w));
+  sheen.height = Math.max(1, Math.round(r.h));
+  for (const s of masks) sheenCtx.drawImage(s.mask!, 0, 0, sheen.width, sheen.height);
+  sheenCtx.globalCompositeOperation = 'source-in';
+  const span = sheen.width + sheen.height;
+  const at = ((performance.now() / 1400) % 1) * span * 1.6 - span * 0.3;
+  const g = sheenCtx.createLinearGradient(at - 160, at * 0.4 - 80, at + 160, at * 0.4 + 80);
+  g.addColorStop(0, 'rgba(255,255,255,0)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  sheenCtx.fillStyle = g;
+  sheenCtx.fillRect(0, 0, sheen.width, sheen.height);
+  sheenCtx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(sheen, r.x, r.y, r.w, r.h);
+}
+
+function animate() {
+  if (state !== 'processing') return;
+  draw();
+  requestAnimationFrame(animate);
+}
+
 // Same look as the server's render (white halo, colour line, numbered badge).
-function drawStroke(s: Stroke, unit: number) {
+function drawStroke(s: Stroke, unit: number, alpha: number) {
   if (!s.points.length) return;
+  ctx.globalAlpha = alpha;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const [color, width] of [['rgba(255,255,255,0.8)', unit * 1.6], [colorOf(s.mark), unit]] as const) {
@@ -145,6 +208,7 @@ function drawStroke(s: Stroke, unit: number) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(String(s.mark), bx, by + r * 0.05);
+  ctx.globalAlpha = 1;
 }
 
 new ResizeObserver(() => {
@@ -181,10 +245,33 @@ canvas.addEventListener('pointermove', (e) => {
   draw();
 });
 const endStroke = () => {
+  if (drawing) segment(drawing);
   drawing = null;
 };
 canvas.addEventListener('pointerup', endStroke);
 canvas.addEventListener('pointercancel', endStroke);
+
+// Ask SAM for this mark right away; show its outline when it comes back.
+async function segment(s: Stroke) {
+  s.markId = crypto.randomUUID().slice(0, 8);
+  try {
+    const imageId = await current!.imageId;
+    const r = await postJson('/api/marks', { imageId, markId: s.markId, stroke: { mark: s.mark, points: s.points } });
+    if (r.found) {
+      const mask = new Image();
+      mask.src = r.overlay;
+      await mask.decode();
+      s.mask = mask;
+    }
+  } catch (err) {
+    console.warn('SAM for mark', s.mark, 'failed:', err);
+  }
+  s.samDone = true;
+  if (strokes.includes(s)) {
+    draw();
+    updateSamStage();
+  }
+}
 
 // ---------- talk button: hold to talk, or tap to start and tap to send ----------
 
@@ -208,7 +295,6 @@ talk.addEventListener('pointerup', () => {
 
 async function startRecording() {
   if (state === 'recording') return;
-  if (state === 'review') closeReview();
   strokes = [];
   chunks = [];
   state = 'recording';
@@ -222,9 +308,7 @@ async function startRecording() {
     recorder.ondataavailable = (ev) => ev.data.size && chunks.push(ev.data);
     recorder.start(250);
     // The clock starts when audio does, so stroke times line up with the voice.
-    const shift = performance.now() - t0;
-    t0 += shift;
-    for (const s of strokes) for (const p of s.points) p.t = Math.max(0, p.t - shift);
+    t0 = performance.now();
   } catch (err) {
     recorder = null;
     caption.textContent = `Microphone unavailable (${(err as Error).message}). Marks only.`;
@@ -236,7 +320,7 @@ function cancelRecording() {
   recorder = null;
   state = 'idle';
   talk.classList.remove('recording');
-  talkLabel.textContent = 'Hold or tap, then draw and talk';
+  talkLabel.textContent = IDLE_LABEL;
 }
 
 async function stopAndSend() {
@@ -257,14 +341,15 @@ async function stopAndSend() {
   state = 'processing';
   talk.disabled = true;
   talkLabel.textContent = 'Working…';
+  stagesEl.hidden = false;
+  updateSamStage();
+  animate();
   try {
-    const res = await fetch('/api/jobs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: imageUrl, strokes, audio: audio ? await blobToDataUrl(audio) : null }),
+    const { id } = await postJson('/api/jobs', {
+      imageId: await current!.imageId,
+      strokes: strokes.map(({ mark, points, markId }) => ({ mark, points, markId })),
+      audio: audio ? await blobToDataUrl(audio) : null,
     });
-    const { id, error } = await res.json();
-    if (error) throw new Error(error);
     await follow(id);
   } catch (err) {
     showError((err as Error).message);
@@ -273,10 +358,21 @@ async function stopAndSend() {
 
 // ---------- progress ----------
 
-const STAGES = ['video', 'understand', 'edit', 'paste', 'done'];
+const SERVER_STAGES = ['understand', 'edit', 'paste', 'done'];
+
+function setStage(name: string, cls: string) {
+  const li = stagesEl.querySelector<HTMLElement>(`[data-stage="${name}"]`);
+  if (li) li.className = cls;
+}
+
+function updateSamStage() {
+  if (stagesEl.hidden) return;
+  setStage('sam', strokes.every((s) => s.samDone) ? 'done' : 'active');
+}
 
 function resetPanel() {
   stagesEl.hidden = true;
+  for (const li of stagesEl.querySelectorAll('li')) li.className = '';
   caption.textContent = '';
   caption.classList.remove('error');
   editsEl.innerHTML = '';
@@ -284,46 +380,48 @@ function resetPanel() {
 }
 
 async function follow(id: string) {
-  stagesEl.hidden = false;
   for (;;) {
     const job: Job = await (await fetch(`/api/jobs/${id}`)).json();
     if (job.error) throw new Error(job.error);
-    const at = STAGES.indexOf(job.stage);
-    for (const li of stagesEl.querySelectorAll('li')) {
-      const i = STAGES.indexOf(li.dataset.stage!);
-      li.className = i < at ? 'done' : i === at ? 'active' : '';
-    }
+    const at = SERVER_STAGES.indexOf(job.stage);
+    SERVER_STAGES.forEach((name, i) => setStage(name, i < at ? 'done' : i === at ? 'active' : ''));
     if (job.transcript) caption.textContent = `“${job.transcript}”`;
-    if (job.edits && !editsEl.childElementCount) {
-      for (const e of job.edits) {
-        const li = document.createElement('li');
-        li.innerHTML = `<b style="background:${colorOf(e.mark)}">${e.mark}</b>`;
-        li.append(`${e.target} → ${e.instruction}`);
-        editsEl.append(li);
-      }
-    }
+    if (job.edits && !editsEl.childElementCount) showEdits(job.edits);
     talkLabel.textContent = `Working… ${Math.round(job.elapsedMs / 1000)} s`;
-    if (job.stage === 'done') return showResult(`/api/jobs/${id}/result.png`);
-    await new Promise((r) => setTimeout(r, 700));
+    if (job.stage === 'done') return showResult(job.resultImageId!);
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+function showEdits(edits: Edit[]) {
+  for (const e of edits) {
+    const li = document.createElement('li');
+    li.innerHTML = `<b style="background:${colorOf(e.mark)}">${e.mark}</b>`;
+    li.append(`${e.target} → ${e.instruction}`);
+    editsEl.append(li);
+    // An arrow's SAM mask is whatever it crossed: stop highlighting it.
+    const s = strokes.find((s) => s.mark === e.mark);
+    if (s) s.pointer = e.kind === 'pointer' || /^no change/i.test(e.instruction);
   }
 }
 
 function showError(msg: string) {
   state = 'idle';
   talk.disabled = false;
-  talkLabel.textContent = 'Hold or tap, then draw and talk';
+  talkLabel.textContent = IDLE_LABEL;
   caption.textContent = `Something went wrong: ${msg}`;
   caption.classList.add('error');
+  draw();
 }
 
 // ---------- before / after ----------
 
-let resultUrl = '';
-async function showResult(url: string) {
-  resultUrl = url;
-  $<HTMLImageElement>('before').src = imageUrl;
+let result: Version | null = null;
+async function showResult(resultImageId: string) {
+  result = { url: `/api/images/${resultImageId}.jpg`, imageId: Promise.resolve(resultImageId) };
+  $<HTMLImageElement>('before').src = current!.url;
   const after = $<HTMLImageElement>('after');
-  after.src = url;
+  after.src = result.url;
   await after.decode();
   state = 'review';
   talk.disabled = false;
@@ -332,6 +430,7 @@ async function showResult(url: string) {
   compare.hidden = false;
   placeCompare();
   setSplit(0.5);
+  draw();
 }
 
 function placeCompare() {
@@ -360,14 +459,14 @@ function closeReview() {
   compare.hidden = true;
   review.hidden = true;
   state = 'idle';
-  talkLabel.textContent = 'Hold or tap, then draw and talk';
+  talkLabel.textContent = IDLE_LABEL;
 }
 
 // Keep: the result becomes the image to keep refining. Talking again from
 // review also keeps it.
 async function keepResult() {
   closeReview();
-  await setImage(resultUrl);
+  if (result) await setImage(result.url, result.imageId);
   resetPanel();
 }
 $('keep').addEventListener('click', keepResult);
