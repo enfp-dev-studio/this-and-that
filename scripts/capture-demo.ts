@@ -8,7 +8,7 @@
 // encoded with ffmpeg at 30 fps. Waits are kept in full (sped up in editing).
 //
 //   node --env-file=.env scripts/capture-demo.ts [scene …]
-//   scenes: hook macaron three hold move chair (default), also brooch cuff; hold follows three
+//   scenes: hook macaron handle stripes three hold helmet (default), also heart coffee move chair brooch cuff; hold follows three
 //   Each take also writes out/demo/<scene>.timing.json (when its voice starts, the
 //   request goes out and the result comes back, and what is said when) for edit-demo.ts.
 //   HEADED=1 shows the browser window.
@@ -32,7 +32,8 @@ const log = (...a: unknown[]) => console.log(`[${new Date().toTimeString().slice
 
 // ---------- the scenes ----------
 
-type Mark = { say: string; object?: string; box?: number[]; shape: 'circle' | 'tap' | 'contour' | 'arrow'; to?: [number, number]; on?: 'ref' };
+// `path`: a contour's points (picture px), drawn in order (default: SPIKES).
+type Mark = { say: string; object?: string; box?: number[]; shape: 'circle' | 'tap' | 'contour' | 'arrow' | 'scribble'; to?: [number, number]; path?: number[][]; on?: 'ref' };
 type Scene = { image: string; ref?: string; marks: Mark[] };
 const sample = (p: string) => join(root, 'samples', p);
 
@@ -68,6 +69,11 @@ const SCENES: Record<string, Scene> = {
       { say: 'and add a little star here.', box: [170, 100, 290, 220], shape: 'circle' },
     ],
   },
+  // Drawing-driven edits on the desk: a new handle's shape, a level, where the stripes go.
+  handle: { image: sample('desk.png'), marks: [{ say: 'Make the handle this shape.', shape: 'contour', box: [1128, 880, 1252, 1012], path: [[1130, 882], [1250, 882], [1250, 1010], [1130, 1010]] }] },
+  coffee: { image: sample('desk.png'), marks: [{ say: 'Fill the coffee up to here.', shape: 'contour', box: [915, 840, 1120, 850], path: [[915, 845], [1118, 845]] }] },
+  heart: { image: sample('desk.png'), marks: [{ say: 'Paint a heart like this on the mug.', shape: 'contour', box: [962, 912, 1078, 1016], path: [[1020, 1016], [1019, 1013], [1015, 1006], [1006, 995], [992, 983], [978, 970], [967, 956], [962, 941], [967, 926], [978, 916], [992, 912], [1006, 916], [1015, 925], [1019, 933], [1020, 937], [1021, 933], [1025, 925], [1034, 916], [1048, 912], [1062, 916], [1073, 926], [1078, 941], [1073, 956], [1062, 970], [1048, 983], [1034, 995], [1025, 1006], [1021, 1013], [1020, 1016]] }] },
+  stripes: { image: sample('desk.png'), marks: [{ say: 'Add stripes to the cat here.', shape: 'scribble', box: [270, 650, 520, 770] }] },
   // A destination: something a selection can't say.
   move: {
     image: sample('desk.png'),
@@ -96,7 +102,7 @@ async function voiceClip(name: string, image: Buffer, marks: { say: string; box:
     const d = await audioDurationMs(aiff);
     parts.push({ file: aiff, at });
     speech.push({ at: at / 1000, dur: d / 1000, say: m.say });
-    strokes.push({ mark: i + 1, points: strokePoints(m.box, m.shape === 'arrow' ? 'arrow' : 'circle', at + 100, at + Math.max(1300, d), W!, H!, m.to) });
+    strokes.push({ mark: i + 1, points: strokePoints(m.box, m.shape === 'arrow' || m.shape === 'scribble' ? m.shape : 'circle', at + 100, at + Math.max(1300, d), W!, H!, m.to) });
     at += Math.max(d, 1300) + 350;
   }
   const inputs = parts.flatMap((p) => ['-i', p.file]);
@@ -123,13 +129,14 @@ async function prepare(name: string, scene: Scene): Promise<Clip> {
     let points: Point[] = s.points;
     if (m.shape === 'tap') points = [{ x: Math.round((x0 + x1) / 2), y: Math.round((y0 + y1) / 2), t: t0 }, { x: Math.round((x0 + x1) / 2) + 1, y: Math.round((y0 + y1) / 2), t: t0 + 70 }];
     if (m.shape === 'contour') {
-      const n = 14, segs = SPIKES.length - 1, end = t1 + 900;
+      const path = m.path ?? SPIKES;
+      const n = 14, segs = path.length - 1, end = t1 + 900;
       points = [];
       for (let k = 0; k < segs * n; k++) {
-        const [a, b] = [SPIKES[Math.floor(k / n)], SPIKES[Math.floor(k / n) + 1]], u = (k % n) / n;
+        const [a, b] = [path[Math.floor(k / n)], path[Math.floor(k / n) + 1]], u = (k % n) / n;
         points.push({ x: Math.round(a[0] + (b[0] - a[0]) * u), y: Math.round(a[1] + (b[1] - a[1]) * u), t: Math.round(t0 + ((end - t0) * k) / (segs * n)) });
       }
-      points.push({ x: SPIKES.at(-1)![0], y: SPIKES.at(-1)![1], t: end });
+      points.push({ x: path.at(-1)![0], y: path.at(-1)![1], t: end });
     }
     return { mark: s.mark, points, ...(m.on ? { on: m.on } : {}) };
   });
@@ -337,6 +344,75 @@ async function sceneHold(page: Page, rec: Recorder) {
 
 // ---------- 3D: the chair from the front and the side, then a turn around it ----------
 
+// The freeform take: a knight's helmet sketched front and side and named, then
+// horns and wings drawn on it as guides and said, then painted. Drawn with the
+// app's replay harness (drawGuides: pen events from a view; make: the words),
+// the voice laid in by edit-demo.ts where each line starts.
+const HELMET = {
+  front: [
+    [[-0.17, 0.03, 0], [-0.185, 0.2, 0], [-0.15, 0.34, 0], [-0.08, 0.42, 0], [0, 0.445, 0], [0.08, 0.42, 0], [0.15, 0.34, 0], [0.185, 0.2, 0], [0.17, 0.03, 0]],
+    [[-0.13, 0.24, 0], [0.13, 0.24, 0]],
+    [[0, 0.27, 0], [0, 0.08, 0]],
+  ],
+  side: [[[0, 0.03, 0.17], [0, 0.2, 0.19], [0, 0.33, 0.16], [0, 0.42, 0.08], [0, 0.445, 0], [0, 0.42, -0.09], [0, 0.32, -0.17], [0, 0.18, -0.2], [0, 0.03, -0.19]]],
+  // Started just off the dome, so they are drawn facing the camera (not on its steep side).
+  horns: [-1, 1].map((k) => [[0.17, 0.38], [0.24, 0.44], [0.31, 0.53], [0.33, 0.64], [0.29, 0.73]].map(([x, y]) => [k * x, y, 0])),
+  wings: [[[0.19, 0.28, -0.02], [0.19, 0.4, -0.08], [0.19, 0.54, -0.16], [0.19, 0.64, -0.27], [0.19, 0.6, -0.33], [0.19, 0.52, -0.27], [0.19, 0.46, -0.31], [0.19, 0.4, -0.24], [0.19, 0.34, -0.27], [0.19, 0.3, -0.17], [0.19, 0.27, -0.05]]],
+};
+
+async function sceneHelmet(page: Page, rec: Recorder) {
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.locator('[role=radio][aria-label="3D"]').click();
+  await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
+  await sleep(1500);
+  const steps = [
+    { say: 'A knight’s helmet.', draw: [['front', HELMET.front], ['side', HELMET.side]] as const },
+    { say: 'Add horns like this.', draw: [['front', HELMET.horns]] as const },
+    { say: 'Add wings here.', draw: [['side', HELMET.wings]] as const },
+  ];
+  await rec.start('helmet');
+  await sleep(1000);
+  const voiceAt = Date.now() / 1000;
+  const done: { say: number; release: number; done: number; parts: string }[] = [];
+  for (const [i, st] of steps.entries()) {
+    if (i) await sleep(2600); // it turns a moment
+    const say = Date.now() / 1000;
+    for (const [view, strokes] of st.draw) await page.evaluate(([v, s, c]) => (window as any).drawGuides(v, s, c), [view, strokes, st.say] as const);
+    const release = Date.now() / 1000;
+    await page.evaluate((text) => (window as any).make(text), st.say);
+    const parts = await page.evaluate(() => (window as any).builder.parts.map((p: any) => `${p.name}:${p.primitive}`).join(', '));
+    done.push({ say, release, done: Date.now() / 1000, parts });
+    log(`helmet: "${st.say}" ${(Date.now() / 1000 - release).toFixed(1)} s → ${parts}`);
+    await page.evaluate(() => (window as any).sketch.strokes.forEach((s: any) => Object.assign(s.line.material, { depthTest: false, opacity: 0.35 }, (s.line.renderOrder = 3) && {})));
+  }
+  await sleep(3000);
+  const pb = (await page.locator('button:has-text("Paint")').boundingBox())!;
+  await page.mouse.move(pb.x + pb.width / 2, pb.y + pb.height / 2, { steps: 12 });
+  await sleep(300);
+  const paintAt = Date.now() / 1000;
+  await page.mouse.down();
+  await sleep(80);
+  await page.mouse.up();
+  await page.waitForSelector('text=Muse Image is painting', { timeout: 10_000 }).catch(() => {});
+  const painted = await page.waitForSelector('text=Muse Image is painting', { state: 'detached', timeout: 120_000 }).then(() => true, () => false);
+  const paintedAt = Date.now() / 1000;
+  log(`helmet: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
+  await page.evaluate(() => Object.assign((window as any).stage.controls, { autoRotate: true, autoRotateSpeed: 1.6 }));
+  await sleep(5500);
+  const zero = await rec.stop('helmet');
+  // The voice: each line as its drawing starts.
+  const speech: Spoken[] = [];
+  for (const [i, st] of steps.entries()) {
+    const f = join(clipDir, `helmet-${i}.aiff`);
+    execFileSync('say', ['-v', VOICE, '-o', f, st.say.replace('’', "'")]);
+    speech.push({ at: done[i].say - voiceAt + 0.3, dur: (await audioDurationMs(f)) / 1000, say: st.say });
+  }
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...speech.flatMap((_, i) => ['-i', join(clipDir, `helmet-${i}.aiff`)]), '-filter_complex', `${speech.map((p, i) => `[${i}:a]adelay=${Math.round(p.at * 1000)}|${Math.round(p.at * 1000)}[a${i}]`).join(';')};${speech.map((_, i) => `[a${i}]`).join('')}amix=inputs=${speech.length}:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'helmet.wav')]);
+  const rel = (t: number) => t - zero;
+  writeFileSync(join(out, 'helmet.timing.json'), JSON.stringify({ voice: join(clipDir, 'helmet.wav'), voiceAt: voiceAt - zero, release: rel(done[0].release), result: rel(done[0].done), steps: done.map((d) => ({ say: rel(d.say), release: rel(d.release), done: rel(d.done), parts: d.parts })), paint: rel(paintAt), painted: rel(paintedAt), speech }, null, 1));
+  return painted ? 'result' : 'failed';
+}
+
 async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
   // 3D through the mode switch (on camera), from a fresh page.
   await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -359,6 +435,10 @@ async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
   const parts = await page.evaluate(() => (window as any).builder?.parts?.length ?? 0);
   log(`chair: ${ok ? `${parts} parts` : 'timeout'} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
   const builtAt = Date.now() / 1000;
+  // The strokes faded over the parts, as Sketch.settle() now does (this local
+  // build predates it), so the parts can be seen landing on them.
+  const overParts = () => page.evaluate(() => (window as any).sketch.strokes.forEach((s: any) => Object.assign(s.line.material, { depthTest: false, opacity: 0.35 }, (s.line.renderOrder = 3) && {})));
+  await overParts();
   await sleep(2500); // the model turns slowly after it is built
   // Then an edit drawn on the model and said, through the mic like a user:
   // hold Space (hold to talk), a line along each side of the seat while saying
@@ -407,6 +487,7 @@ async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
   const edited = await page.waitForFunction(() => (window as any).builder.parts !== (window as any).__before && (window as any).stage.controls.autoRotate, undefined, { timeout: 90_000 }).then(() => true, () => false);
   const editedAt = Date.now() / 1000;
   const after = await page.evaluate(() => (window as any).builder.parts.map((p: any) => p.name).join(', '));
+  await overParts();
   log(`chair: edit ${edited} ${(editedAt - editRelease).toFixed(1)} s: ${after}`);
   await sleep(3000); // and it turns
   // Then "Paint" (Muse Image paints it from this view), and it turns again.
@@ -435,7 +516,7 @@ async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
 
 // ---------- run ----------
 
-const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'three', 'hold', 'move', 'chair'];
+const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'handle', 'stripes', 'three', 'hold', 'helmet'];
 const browser = await chromium.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: !process.env.HEADED,
@@ -450,6 +531,7 @@ for (const name of wanted) {
   try {
     if (name === 'hold') results[name] = results.three === 'result' ? await sceneHold(page, rec) : 'skipped (no result from "three")';
     else if (name === 'chair') results[name] = await sceneChair(page, cdp, rec);
+    else if (name === 'helmet') results[name] = await sceneHelmet(page, rec);
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {
     results[name] = `error: ${String(e?.message ?? e).split('\n')[0]}`;

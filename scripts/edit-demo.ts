@@ -66,14 +66,24 @@ async function subtitle(text: string, file: string) {
 // ---------- clips ----------
 
 type Sub = { from: number; to: number; text: string; png?: string }; // `png`: a full frame to show instead of `text`
-// Real time until `real`, ×4 until `fastUntil`, then real time; `zoom`: the
-// camera's keyframes (source time, zoom, focus in the clip's 1600×1000 px).
+// Real time until `real`, a cut over the wait until `fastUntil`, then real time;
+// `zoom`: the camera's keyframes (source time, zoom, focus in the clip's 1600×1000 px).
 type Key = { t: number; z: number; x: number; y: number };
 type Plan = { real: number; fastUntil: number; subs: Sub[]; zoom?: Key[]; voice?: { file: string; at: number }; hold?: number; segs?: Seg[]; pulses?: Pulse[] };
 // A ring swelling out of a mark at source time `t` (capture px).
 type Pulse = { t: number; x: number; y: number; rx: number; ry: number; color: string };
-// Stretches of a clip in order, each in real time or ×4 (`segs` overrides real/fastUntil).
-type Seg = { from: number; to: number; fast?: boolean };
+// Stretches of a clip in order, each in real time or cut (`fast`: a wait, left
+// out; what follows shows how long it took, `wait` s, default its length).
+// `segs` overrides real/fastUntil.
+type Seg = { from: number; to: number; fast?: boolean; wait?: number };
+
+// How long a cut wait took: a stopwatch and the seconds, as a small label.
+async function waitLabel(seconds: number, file: string) {
+  const text = `${Math.max(1, Math.round(seconds))} s`, w = 96 + text.length * 19, h = 58;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="${w}" height="${h}" rx="12" fill="#000" fill-opacity="0.78"/><circle cx="36" cy="32" r="13" fill="none" stroke="#fff" stroke-width="3"/><rect x="32" y="12" width="8" height="5" rx="1.5" fill="#fff"/><line x1="36" y1="32" x2="42" y2="25" stroke="#fff" stroke-width="3" stroke-linecap="round"/><text x="62" y="41" font-family="${FONT}" font-size="30" font-weight="600" fill="#fff">${text}</text></svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(file);
+  return { w, h };
+}
 
 // An ffmpeg expression easing (smoothstep) between keyframes, of time `T`.
 function eased(keys: Key[], pick: (k: Key) => number, T: string) {
@@ -124,41 +134,40 @@ async function clip(name: string, plan: Plan) {
     const k = input('-i', png);
     f.push(`[v${i}][${k}:v]overlay=0:0:enable='between(t,${sub.from.toFixed(3)},${sub.to.toFixed(3)})'[v${i + 1}]`);
   }
-  const x4 = join(work, 'x4.png');
-  if (!existsSync(x4)) await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="64"><rect width="120" height="64" rx="10" fill="#000" fill-opacity="0.7"/><text x="60" y="44" font-family="${FONT}" font-size="34" font-weight="700" fill="#fff" text-anchor="middle">×4</text></svg>`)).png().toFile(x4);
-  const x4i = input('-i', x4);
   const v = `[v${plan.subs.length}]`;
   const D = dur(src);
   const segs: Seg[] = plan.segs ?? (plan.fastUntil - plan.real > 1.5 ? [{ from: 0, to: plan.real }, { from: plan.real, to: plan.fastUntil, fast: true }, { from: plan.fastUntil, to: D }] : [{ from: 0, to: D }]);
   const hold = plan.hold ? `,tpad=stop_mode=clone:stop_duration=${plan.hold}` : '';
-  const nFast = segs.filter((g) => g.fast).length;
-  f.push(`${v}split=${segs.length}${segs.map((_, i) => `[g${i}]`).join('')}`);
-  if (nFast) f.push(`[${x4i}:v]split=${nFast}${segs.filter((g) => g.fast).map((_, i) => `[x${i}]`).join('')}`);
-  let xi = 0;
-  segs.forEach((g, i) => {
-    const last = i === segs.length - 1 ? hold : '';
-    if (g.fast) {
-      f.push(`[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=(PTS-STARTPTS)/4[gf${i}]`, `[gf${i}][x${xi++}]overlay=W-w-48:${H - 120}${last}[s${i}]`);
-    } else f.push(`[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=PTS-STARTPTS${last}[s${i}]`);
-  });
-  f.push(`${segs.map((_, i) => `[s${i}]`).join('')}concat=n=${segs.length}:v=1:a=0[out]`);
-  const fast = nFast > 0;
-  // The take's voice at its times in the clip, heard in the real-time stretches (the ×4 ones are silent).
-  const outDur = segs.reduce((sum, g) => sum + (g.to - g.from) / (g.fast ? 4 : 1), 0) + (plan.hold ?? 0);
+  // The waits are cut; the stretch after one opens with how long it took (top centre, under the app's status).
+  const shown = segs.map((g, i) => ({ g, i, cut: segs[i - 1]?.fast ? segs[i - 1] : undefined })).filter(({ g }) => !g.fast);
+  f.push(`${v}split=${shown.length}${shown.map(({ i }) => `[g${i}]`).join('')}`);
+  for (const [n, { g, i, cut }] of shown.entries()) {
+    const last = n === shown.length - 1 ? hold : '';
+    const base = `[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=PTS-STARTPTS`;
+    if (cut) {
+      const png = join(work, `wait-${name}-${i}.png`);
+      const { w } = await waitLabel(cut.wait ?? cut.to - cut.from, png);
+      const k = input('-i', png);
+      f.push(`${base}[c${i}]`, `[c${i}][${k}:v]overlay=${Math.round((W - w) / 2)}:132:enable='lt(t,2.6)'${last}[s${i}]`);
+    } else f.push(`${base}${last}[s${i}]`);
+  }
+  f.push(`${shown.map(({ i }) => `[s${i}]`).join('')}concat=n=${shown.length}:v=1:a=0[out]`);
+  // The take's voice at its times in the clip, heard in the stretches shown.
+  const outDur = shown.reduce((sum, { g }) => sum + g.to - g.from, 0) + (plan.hold ?? 0);
   if (plan.voice) {
     const vi = input('-i', plan.voice.file);
     const ms = Math.max(0, Math.round(plan.voice.at * 1000));
     const skip = Math.max(0, -plan.voice.at);
     const A = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo';
-    const real = segs.flatMap((g, i) => (g.fast ? [] : [i]));
-    f.push(`[${vi}:a]atrim=start=${skip.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${ms}|${ms},aresample=48000,${A},apad=whole_dur=${D.toFixed(3)},asplit=${real.length}${real.map((i) => `[va${i}]`).join('')}`);
-    segs.forEach((g, i) => f.push(g.fast ? `anullsrc=r=48000:cl=stereo,atrim=0:${((g.to - g.from) / 4).toFixed(3)},${A}[a${i}]` : `[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`));
-    f.push(`${segs.map((_, i) => `[a${i}]`).join('')}concat=n=${segs.length}:v=0:a=1,apad=whole_dur=${outDur.toFixed(3)}[aout]`);
+    f.push(`[${vi}:a]atrim=start=${skip.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${ms}|${ms},aresample=48000,${A},apad=whole_dur=${D.toFixed(3)},asplit=${shown.length}${shown.map(({ i }) => `[va${i}]`).join('')}`);
+    for (const { g, i } of shown) f.push(`[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`);
+    f.push(`${shown.map(({ i }) => `[a${i}]`).join('')}concat=n=${shown.length}:v=0:a=1,apad=whole_dur=${outDur.toFixed(3)}[aout]`);
   } else f.push(`anullsrc=r=48000:cl=stereo,atrim=0:${outDur.toFixed(3)}[aout]`);
   const out = join(work, `${String(seq++).padStart(2, '0')}-${name}.mp4`);
   ff([...inputs, '-filter_complex', f.join(';'), '-map', '[out]', '-map', '[aout]', ...ENC, '-shortest', out]);
   parts.push(out);
-  console.log(`${name}: ${D.toFixed(1)} s → ${dur(out).toFixed(1)} s${fast ? ` (×4: ${segs.filter((g) => g.fast).map((g) => `${g.from.toFixed(1)}–${g.to.toFixed(1)}`).join(', ')} s)` : ''}`);
+  const cuts = segs.filter((g) => g.fast);
+  console.log(`${name}: ${D.toFixed(1)} s → ${dur(out).toFixed(1)} s${cuts.length ? ` (cut: ${cuts.map((g) => `${g.from.toFixed(1)}–${g.to.toFixed(1)}`).join(', ')} s)` : ''}`);
 }
 
 // The problem in one shot: typing the macaron's position got the wrong one
@@ -176,34 +185,34 @@ async function macaronBeat() {
   const bg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="${BG}"/><rect x="959" y="120" width="2" height="840" fill="#27272a"/>${line(480, 150, 34, 'Typing it', gray2)}${line(480, 205, 28, `“${words.slice(0, half).join(' ')}`)}${line(480, 245, 28, `${words.slice(half).join(' ')}”`)}${line(1440, 150, 34, 'Showing it', gray2)}${line(480, 990, 52, '47 words, 2 rounds', '#f87171', 700)}${line(1440, 990, 52, '4 words, 1 try', '#4ade80', 700)}</svg>`;
   const png = join(work, 'macaron-bg.png');
   await sharp(Buffer.from(bg)).composite([{ input: wrong, left: 50, top: 300 }]).png().toFile(png);
-  // Right: the take, cropped to the picture: tap and say it, a short wait at ×4, the right one.
+  // Right: the take, cropped to the picture: tap and say it, the wait cut (its time shown), the right one.
   const src = join(demo, 'macaron.mp4');
   const s0 = Math.max(0, t.voiceAt - 0.3), s1 = t.release + 0.8, s2 = t.result - 0.3, s3 = Math.min(dur(src), t.result + 3);
   const subPng = join(work, 'sub-macaron.png');
   await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="80"><rect x="${(900 - 520) / 2}" y="4" width="520" height="70" rx="10" fill="#000" fill-opacity="0.72"/><text x="450" y="52" font-family="${FONT}" font-size="40" font-weight="500" fill="#fff" text-anchor="middle">${esc(t.speech[0].say)}</text></svg>`)).png().toFile(subPng);
-  const x4 = join(work, 'x4.png');
+  const waitPng = join(work, 'wait-macaron.png');
+  const { w: ww } = await waitLabel(t.result - t.release, waitPng);
   const say = { from: t.voiceAt + t.speech[0].at - s0 - 0.1, to: t.voiceAt + t.speech[0].at + t.speech[0].dur - s0 + 0.5 };
-  const d1 = s1 - s0, d2 = (s2 - s1) / 4, d3 = s3 - s2, total = d1 + d2 + d3 + 1.5;
+  const d1 = s1 - s0, d3 = s3 - s2, total = d1 + d3 + 1.5;
   const f = [
     // the picture's place in the capture (fit(): 1176×784 at 212,88) and a little around it
-    `[1:v]fps=30,crop=1236:824:182:58,scale=860:574,split=3[m0][m1][m2]`,
+    `[1:v]fps=30,crop=1236:824:182:58,scale=860:574,split=2[m0][m2]`,
     `[m0]trim=${s0.toFixed(3)}:${s1.toFixed(3)},setpts=PTS-STARTPTS[r0]`,
-    `[m1]trim=${s1.toFixed(3)}:${s2.toFixed(3)},setpts=(PTS-STARTPTS)/4[f1]`,
-    `[f1][3:v]overlay=W-w-16:H-h-16:shortest=1[r1]`,
-    `[m2]trim=${s2.toFixed(3)}:${s3.toFixed(3)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=1.5[r2]`,
-    `[r0][r1][r2]concat=n=3:v=1:a=0[mv]`,
+    `[m2]trim=${s2.toFixed(3)}:${s3.toFixed(3)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=1.5[m3]`,
+    `[m3][3:v]overlay=${Math.round((860 - ww) / 2)}:16:enable='lt(t,2.6)'[r2]`,
+    `[r0][r2]concat=n=2:v=1:a=0[mv]`,
     `[0:v][mv]overlay=1010:300:shortest=1[b0]`,
     `[b0][2:v]overlay=1010:${300 + 574 - 90}:enable='between(t,${say.from.toFixed(2)},${say.to.toFixed(2)})',fade=in:0:8,fade=out:st=${(total - 0.3).toFixed(2)}:d=0.3[out]`,
     `[4:a]atrim=start=${Math.max(0, s0 - t.voiceAt).toFixed(3)},asetpts=PTS-STARTPTS,adelay=${Math.round(Math.max(0, t.voiceAt - s0) * 1000)}|${Math.round(Math.max(0, t.voiceAt - s0) * 1000)},atrim=0:${d1.toFixed(3)},aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${total.toFixed(3)}[aout]`,
   ];
   const out = join(work, `${String(seq++).padStart(2, '0')}-macaron-beat.mp4`);
-  ff(['-loop', '1', '-t', total.toFixed(3), '-i', png, '-i', src, '-loop', '1', '-t', total.toFixed(3), '-i', subPng, '-loop', '1', '-t', total.toFixed(3), '-i', x4, '-i', t.voice, '-filter_complex', f.join(';'), '-map', '[out]', '-map', '[aout]', ...ENC, '-t', total.toFixed(3), out]);
+  ff(['-loop', '1', '-t', total.toFixed(3), '-i', png, '-i', src, '-loop', '1', '-t', total.toFixed(3), '-i', subPng, '-i', waitPng, '-i', t.voice, '-filter_complex', f.join(';'), '-map', '[out]', '-map', '[aout]', ...ENC, '-t', total.toFixed(3), out]);
   parts.push(out);
   console.log(`macaron beat: ${dur(out).toFixed(1)} s`);
 }
 
 // Each take's times in its clip and what was said when (capture-demo.ts).
-type Timing = { voice: string; voiceAt: number; release: number; result: number; edit?: { release: number; done: number; ok: boolean }; paint?: number; painted?: number; speech: { at: number; dur: number; say: string }[] };
+type Timing = { voice: string; voiceAt: number; release: number; result: number; edit?: { release: number; done: number; ok: boolean }; steps?: { say: number; release: number; done: number }[]; paint?: number; painted?: number; speech: { at: number; dur: number; say: string }[] };
 const timing = (name: string): Timing => JSON.parse(readFileSync(join(demo, `${name}.timing.json`), 'utf8'));
 
 // Subtitles: the exact spoken words, one cue at a time.
@@ -230,28 +239,28 @@ const size = (file: string) => {
   return [Number(/pixelWidth: (\d+)/.exec(o)![1]), Number(/pixelHeight: (\d+)/.exec(o)![1])];
 };
 
-function plan2d(name: string, image: string, ref = false): Plan {
+// `after`: real time kept after the pen lifts (the outlines and callouts appear);
+// `maxZoom`: how close the camera may go on small marks.
+function plan2d(name: string, image: string, ref = false, after = 5.2, maxZoom = 1.38): Plan {
   const t = timing(name);
   const start = t.voiceAt + t.speech[0].at;
-  // The camera: in on the marks while drawing and while the instructions
-  // appear, back out for the wait and the result.
+  // The camera: in on the marks while drawing, and on them for the result too.
   const strokes = JSON.parse(readFileSync(join(demo, 'clips', `${name}.json`), 'utf8')).strokes as { points: { x: number; y: number }[]; on?: string }[];
   const [nw, nh] = size(image);
   const pic = fit(nw, nh, ref);
   const pts = strokes.flatMap((s) => s.points.map((p) => (s.on ? { x: REF_FIT.x + p.x * REF_FIT.k, y: REF_FIT.y + p.y * REF_FIT.k } : { x: pic.x + p.x * pic.k, y: pic.y + p.y * pic.k })));
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
   const [bx0, bx1, by0, by1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-  const zm = Math.max(1.12, Math.min(1.38, 1778 / ((bx1 - bx0) * 2.4 + 1), 1000 / ((by1 - by0) * 2.2 + 1)));
+  const zm = Math.max(1.12, Math.min(maxZoom, 1778 / ((bx1 - bx0) * 2.4 + 1), 1000 / ((by1 - by0) * 2.2 + 1)));
   const focus = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
-  const out = Math.min(t.release + 6.5, t.result - 1);
   const zoom: Key[] = [
     { t: start - 0.5, z: 1, x: 800, y: 500 },
     { t: start + 0.5, z: zm, ...focus },
-    { t: out, z: zm, ...focus },
-    { t: out + 0.9, z: 1, x: 800, y: 500 },
   ];
-  // Real time while drawing and while the instructions appear, ×4 for the wait, the result in real time (held 4 s more).
-  return { real: out + 0.9, fastUntil: t.result - 0.6, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, hold: 3 };
+  // Real time while drawing and while the outlines and callouts appear, the wait cut (its time shown), the result (held 3 s more).
+  const real = Math.min(t.release + after, t.result - 0.3);
+  const D = dur(join(demo, `${name}.mp4`));
+  return { real, fastUntil: t.result - 0.3, segs: [{ from: 0, to: real }, { from: real, to: t.result - 0.3, fast: true, wait: t.result - t.release }, { from: t.result - 0.3, to: D }], subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, hold: 3 };
 }
 
 // ---------- pointing words ----------
@@ -417,24 +426,23 @@ const LINE = ['Complex edits, asked simply:', 'draw and talk at the same time.']
 // 0:00 the line, then the problem
 await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 4);
 await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { text: 'The last 10% is details, and words can’t point.', size: 52, color: gray }], 4);
-// x4 label, made once (the macaron beat uses it too)
-await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="64"><rect width="120" height="64" rx="10" fill="#000" fill-opacity="0.7"/><text x="60" y="44" font-family="${FONT}" font-size="34" font-weight="700" fill="#fff" text-anchor="middle">×4</text></svg>`)).png().toFile(join(work, 'x4.png'));
-// simple to complex: one tap, a shape, three edits in one breath, a direction, 3D
+// simple to complex: one tap, a shape drawn, three edits in one breath, 3D
 await macaronBeat();
 await card([{ text: 'A sketch says how.', size: 72, weight: 600 }], 2.5);
 await clip('hook', plan2d('hook', join(root, 'samples', 'illust', 'armor.jpg')));
+{
+  // The drawing is the instruction: a new handle's shape, where the stripes go.
+  const desk = join(root, 'samples', 'desk.png');
+  await clip('handle', await pointing('handle', desk, plan2d('handle', desk, false, 5.2, 1.7), []));
+  await clip('stripes', await pointing('stripes', desk, plan2d('stripes', desk, false, 5.2, 1.6), []));
+}
 await compareCard(7.5);
 {
   const image = join(root, 'samples', 'illust', 'keyvisual.jpg');
-  await clip('three', await pointing('three', image, plan2d('three', image), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
+  await clip('three', await pointing('three', image, plan2d('three', image, false, 6.6), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
 }
 await clip('hold', { real: 99, fastUntil: 99, subs: [] });
 await card([{ text: 'Only what you marked changes.', size: 72, weight: 600 }], 3);
-if (existsSync(join(demo, 'move.timing.json'))) {
-  await card([{ text: 'Even where it should go.', size: 72, weight: 600 }], 2.5);
-  const image = join(root, 'samples', 'desk.png');
-  await clip('move', await pointing('move', image, plan2d('move', image), ['“this” → the cactus', '“here” → where it goes']));
-}
 // the evidence
 await card(
   [
@@ -458,49 +466,31 @@ await card(
   6,
 );
 // next: 3D
-await card([{ text: 'Next: the same gesture in 3D.', size: 72, weight: 600 }], 3);
-{
-  const t = timing('chair');
-  const D = dur(join(demo, 'chair.mp4'));
-  const built = t.result, paint = t.paint ?? D, painted = t.painted ?? D;
-  const edit = t.edit?.ok ? t.edit : null;
-  const c = { x: 800, y: 520 };
-  // The camera: in on the sketch while it is drawn, closer on the model while
-  // it turns, out a little for the edit (the talk button in view), in again,
-  // out to show the Paint click, and in on the painted chair.
+await card([{ text: 'The same gesture, in 3D.', size: 72, weight: 600 }, { text: 'Strokes say where and what shape; the model does the rest.', size: 44, color: gray }], 3.5);
+if (existsSync(join(demo, 'helmet.timing.json'))) {
+  // A knight's helmet from a sketch, then horns and wings drawn on it as guides, then painted.
+  const t = timing('helmet');
+  const D = dur(join(demo, 'helmet.mp4'));
+  const steps = t.steps!, paint = t.paint!, painted = t.painted!;
+  // The helmet stands about 0.45 m tall, the horns reach 0.75 m: close in on it.
+  const c = { x: 800, y: 560 };
   const zoom: Key[] = [
-    { t: 1, z: 1, x: 800, y: 500 },
-    { t: 2, z: 1.3, x: 800, y: 470 },
-    { t: 10.5, z: 1.3, x: 800, y: 470 },
-    { t: 12, z: 1.45, ...c },
-    ...(edit
-      ? [
-          { t: built + 2.2, z: 1.45, ...c },
-          { t: built + 3.2, z: 1.15, x: 800, y: 560 },
-          { t: edit.release + 0.8, z: 1.15, x: 800, y: 560 },
-          { t: edit.done, z: 1.45, ...c },
-        ]
-      : []),
-    { t: paint - 1.2, z: 1.45, ...c },
+    { t: 0.5, z: 1, x: 800, y: 500 },
+    { t: 1.5, z: 1.5, ...c },
+    { t: paint - 1.2, z: 1.5, ...c },
     { t: paint - 0.3, z: 1.05, x: 800, y: 500 },
     { t: paint + 1.2, z: 1.05, x: 800, y: 500 },
-    { t: painted - 0.5, z: 1.45, ...c },
+    { t: painted - 0.5, z: 1.5, ...c },
   ];
-  // Real time while drawing, editing, painting's click and the turns; ×4 for the waits.
-  const segs: Seg[] = [
-    { from: 0, to: 11.5 },
-    { from: 11.5, to: built - 0.3, fast: true },
-    ...(edit
-      ? [
-          { from: built - 0.3, to: edit.release + 0.8 },
-          { from: edit.release + 0.8, to: edit.done - 0.3, fast: true },
-          { from: edit.done - 0.3, to: paint + 1.2 },
-        ]
-      : [{ from: built - 0.3, to: paint + 1.2 }]),
-    { from: paint + 1.2, to: painted - 0.3, fast: true },
-    { from: painted - 0.3, to: D },
-  ];
-  await clip('chair', { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
+  // Real time while drawing and talking and while the parts grow and turn; each wait cut, its time shown.
+  const segs: Seg[] = [];
+  let at = 0;
+  for (const st of steps) {
+    segs.push({ from: at, to: st.release + 0.4 }, { from: st.release + 0.4, to: st.done - 0.2, fast: true, wait: st.done - st.release });
+    at = st.done - 0.2;
+  }
+  segs.push({ from: at, to: paint + 1.2 }, { from: paint + 1.2, to: painted - 0.3, fast: true, wait: painted - paint }, { from: painted - 0.3, to: D });
+  await clip('helmet', { real: 0, fastUntil: 0, segs: segs.filter((g) => g.to - g.from > 0.05), subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
 }
 await card(
   [
