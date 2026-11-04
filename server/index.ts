@@ -115,7 +115,7 @@ async function readBody(req: IncomingMessage) {
 
 // Experiments, each switchable per request (body.opts) or by env default.
 type Opts = { instant: boolean; speculate: boolean };
-const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE !== '0' };
+const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1' };
 
 async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr) {
   const dir = join(jobsDir, job.id);

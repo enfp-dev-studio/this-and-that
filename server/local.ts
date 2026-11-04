@@ -22,6 +22,39 @@ async function alphaOf(mask: Mask, width: number, height: number) {
 const hex = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16) || 0);
 const luma = (r: number, g: number, b: number) => 0.299 * r + 0.587 * g + 0.114 * b;
 
+// SAM masks can stop just short of an object's edge (a sliver of door
+// frame). Take in pixels in a thin ring around the mask whose colour is close
+// to the object's average.
+function growBySimilarColor(img: Rgb, alpha: Buffer) {
+  const { width: w, height: h } = img;
+  const mean = [0, 0, 0];
+  let n = 0;
+  for (let i = 0; i < alpha.length; i++) if (alpha[i] >= 128) { for (let c = 0; c < 3; c++) mean[c] += img.data[i * 3 + c]; n++; }
+  if (!n) return;
+  for (let c = 0; c < 3; c++) mean[c] /= n;
+  const r = Math.round(Math.max(w, h) * 0.01);
+  const inMask = Uint8Array.from(alpha, (a) => (a >= 128 ? 1 : 0));
+  // Distance to the mask, by a separable max (square ring of radius r).
+  const rowNear = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let last = -Infinity;
+    for (let x = 0; x < w; x++) { if (inMask[y * w + x]) last = x; if (x - last <= r) rowNear[y * w + x] = 1; }
+    last = Infinity;
+    for (let x = w - 1; x >= 0; x--) { if (inMask[y * w + x]) last = x; if (last - x <= r) rowNear[y * w + x] = 1; }
+  }
+  for (let x = 0; x < w; x++) {
+    let last = -Infinity;
+    for (let y = 0; y < h; y++) { if (rowNear[y * w + x]) last = y; if (y - last <= r) grow(y * w + x); }
+    last = Infinity;
+    for (let y = h - 1; y >= 0; y--) { if (rowNear[y * w + x]) last = y; if (last - y <= r) grow(y * w + x); }
+  }
+  function grow(i: number) {
+    if (alpha[i] >= 128) return;
+    const d = Math.hypot(img.data[i * 3] - mean[0], img.data[i * 3 + 1] - mean[1], img.data[i * 3 + 2] - mean[2]);
+    if (d < 45) alpha[i] = 255;
+  }
+}
+
 // New colour, same shading: each pixel's brightness relative to the object's
 // average scales the target colour; highlights blend toward white.
 function recolor(img: Rgb, alpha: Buffer, color: string) {
@@ -149,6 +182,7 @@ export async function applyLocal(image: Buffer, edits: Edit[], masks: Map<number
     const mask = masks.get(e.mark);
     if (!mask) continue;
     const alpha = await alphaOf(mask, img.width, img.height);
+    if (e.op === 'recolor') growBySimilarColor(img, alpha);
     if (e.op === 'recolor' && /^#[0-9a-f]{6}$/i.test(e.color ?? '')) recolor(img, alpha, e.color!);
     else if (e.op === 'tone' && e.amount && e.amount > 0) tone(img, alpha, e.amount);
     else if (e.op === 'scale' && e.amount && e.amount >= 1) enlarge(img, alpha, e.amount);

@@ -4,7 +4,7 @@
 // job's timing and token usage.
 //
 //   node --env-file=.env m0/bench.ts [a b c …]      (server on :8787)
-//   INSTANT=0 / SPECULATE=0 / REALTIME=0   turn an experiment off for these jobs
+//   INSTANT=0 / REALTIME=0 / SPECULATE=1   turn an experiment off (on) for these jobs
 //   LABEL=x                          copies each result to out/bench-runs/x-<clip>.jpg
 
 import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -16,7 +16,7 @@ const out = join(import.meta.dirname, '..', 'out');
 const clips = process.argv.slice(2).length ? process.argv.slice(2) : ['a', 'b', 'c'];
 const image = `data:image/png;base64,${readFileSync(join(import.meta.dirname, '..', 'samples', 'desk.png')).toString('base64')}`;
 const { imageId } = await (await fetch(`${BASE}/api/images`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image }) })).json();
-const opts = { instant: process.env.INSTANT !== '0', speculate: process.env.SPECULATE !== '0', realtime: process.env.REALTIME !== '0' };
+const opts = { instant: process.env.INSTANT !== '0', speculate: process.env.SPECULATE === '1', realtime: process.env.REALTIME !== '0' };
 
 for (const name of clips) {
   const clip = JSON.parse(readFileSync(join(out, 'm0', `${name}.json`), 'utf8'));

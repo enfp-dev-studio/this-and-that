@@ -175,22 +175,57 @@ export async function museEdit(image: Buffer, guide: Buffer, edits: Edit[], trac
   return editImage(editPrompt(edits), [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, { output_format: 'jpeg' });
 }
 
-// Paste only the marked regions of `edited` onto `image`.
+// Where the edit clearly changed the picture near a mark (steam above a
+// removed cup, a lamp at the arrow's end), at SAM's size. Muse redraws the
+// whole image with small drift, so only strong differences count.
+async function changedNear(image: Buffer, edited: Buffer, areas: number[][], w: number, h: number): Promise<Mask> {
+  const a = await sharp(image).resize(w, h, { fit: 'fill' }).removeAlpha().raw().toBuffer();
+  const b = await sharp(edited).resize(w, h, { fit: 'fill' }).removeAlpha().raw().toBuffer();
+  const data = new Uint8Array(w * h);
+  for (const [x0, y0, x1, y1] of areas)
+    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(h, y1); y++)
+      for (let x = Math.max(0, Math.floor(x0)); x < Math.min(w, x1); x++) {
+        const i = (y * w + x) * 3;
+        if (Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2])) > 48) data[y * w + x] = 1;
+      }
+  // Drop specks: keep pixels whose 5×5 neighbourhood is mostly changed.
+  const out = new Uint8Array(w * h);
+  for (let y = 2; y < h - 2; y++)
+    for (let x = 2; x < w - 2; x++) {
+      let n = 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) n += data[(y + dy) * w + x + dx];
+      if (n >= 13) out[y * w + x] = 1;
+    }
+  return { width: w, height: h, data: out };
+}
+
+// Paste only the marked regions of `edited` onto `image`: each mark's SAM
+// mask, plus whatever the edit visibly changed close to the mark.
 export async function pasteMarked(image: Buffer, edited: Buffer, strokes: Stroke[], seg: { masks: Map<number, Mask>; width: number; height: number }, edits: Edit[]) {
   const { width, height } = await sharp(image).metadata();
   const scale = seg.width / width!;
+  const side = Math.max(seg.width, seg.height);
   const regions: Mask[] = [];
+  const near: number[][] = [];
   for (const s of strokes) {
     const e = edits.find((e) => e.mark === s.mark);
     if (!e || /^no change/i.test(e.instruction)) continue;
-    // A pointer's own area may be where something moves to: paste around the
-    // stroke, at least 12% of the image wide, so a moved object isn't cut off.
-    if (e.kind === 'pointer') regions.push(strokeMask(s, seg.width, seg.height, scale, 0.12 * Math.max(seg.width, seg.height)));
-    else regions.push(seg.masks.get(s.mark) ?? strokeMask(s, seg.width, seg.height, scale));
+    const b = strokeBox(s);
+    const [x0, y0, x1, y1] = [b.left * scale, b.top * scale, b.right * scale, b.bottom * scale];
+    if (e.kind === 'pointer') {
+      // Where an arrow points, something may arrive: look a quarter of the image around it.
+      regions.push(strokeMask(s, seg.width, seg.height, scale));
+      near.push([x0 - side / 4, y0 - side / 4, x1 + side / 4, y1 + side / 4]);
+    } else {
+      regions.push(seg.masks.get(s.mark) ?? strokeMask(s, seg.width, seg.height, scale));
+      const gx = (x1 - x0) * 0.5, gy = (y1 - y0) * 0.5;
+      near.push([x0 - gx, y0 - gy, x1 + gx, y1 + gy]);
+    }
   }
   if (!regions.length) return { out: await sharp(image).png().toBuffer(), alpha: Buffer.alloc(width! * height!) };
-  const side = Math.max(width!, height!);
-  const alpha = await pasteAlpha(regions, width!, height!, side * 0.03, side * 0.012);
+  regions.push(await changedNear(image, edited, near, seg.width, seg.height));
+  const full = Math.max(width!, height!);
+  const alpha = await pasteAlpha(regions, width!, height!, full * 0.03, full * 0.012);
   return { out: await pasteBack(image, edited, alpha), alpha };
 }
 
@@ -237,7 +272,7 @@ export function specMatches(clauses: string[], edits: Edit[]) {
 export async function museEditSpoken(image: Buffer, guide: Buffer, clauses: string[], trace?: Trace) {
   const { width, height } = await sharp(image).metadata();
   const lines = clauses.map((c, i) => `${i + 1}. At the ${colorNameOf(i + 1)} mark numbered ${i + 1}, the person said: "${c}"`);
-  const prompt = `Edit the first image. The second image is the same picture with numbered coloured marks. While drawing each mark, the person said (in Korean) what to change there; words like 이거/이건/여기 (this/here) and 저거/저건/저기 (that/there) mean what that mark covers, and 이쪽/저쪽 (this way) mean the direction a mark points:
+  const prompt = `Edit the first image. The second image is the same picture with numbered coloured marks. While drawing each mark, the person said (in Korean) what to change there; words like 이거/이건/여기 (this/here) and 저거/저건/저기 (that/there) mean what that mark covers, and 이쪽/저쪽 (this way) mean the direction a mark points. The words come from speech recognition and may contain mistakes (a word that sounds alike): read each as the most plausible instruction for what is under its mark.
 ${lines.join('\n')}
 Make exactly these changes. Keep everything else exactly as in the first image: composition, framing, every other object, lighting and art style. The output must not contain any of the marks, lines or numbers from the second image.`;
   const jpeg = (b: Buffer) => sharp(b).jpeg({ quality: 92 }).toBuffer();

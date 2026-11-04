@@ -113,7 +113,7 @@ export async function replay(base: string, imageId: string, strokes: Stroke[], w
   const released = Date.now();
   await Promise.all([...markCalls, streamed]);
   const audio = `data:audio/wav;base64,${wav.toString('base64')}`;
-  const { id } = await post('/api/jobs', { imageId, strokes: marks, audio, asrId, opts: { instant: opts.instant ?? true, speculate: opts.speculate ?? true } });
+  const { id } = await post('/api/jobs', { imageId, strokes: marks, audio, asrId, opts: { instant: opts.instant ?? true, speculate: opts.speculate ?? false } });
 
   let editsAt = 0, previewAt = 0, job: any;
   for (;;) {
