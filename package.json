@@ -6,6 +6,7 @@
     "dev": "vite",
     "server": "node --env-file-if-exists=.env server/index.ts",
     "build": "vite build",
+    "check:ui": "node scripts/check-ui.mjs",
     "start": "vite build && node --env-file-if-exists=.env server/index.ts"
   },
   "dependencies": {

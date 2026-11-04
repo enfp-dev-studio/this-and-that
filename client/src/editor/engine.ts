@@ -5,7 +5,7 @@
 
 import { postJson } from './api';
 import { LiveAsr } from './live-asr';
-import { markColor, themeColor, watchTheme } from './colors';
+import { markColor, themeVar, themeLength, watchTheme } from './colors';
 
 export type Point = { x: number; y: number; t: number };
 export type Stroke = {
@@ -52,8 +52,6 @@ type Job = {
 
 const NO_STEPS = { sam: 'pending', understand: 'pending', edit: 'pending', paste: 'pending' } as const;
 const SERVER_STEPS = ['understand', 'edit', 'paste', 'done'] as const;
-// Room around the image for the floating toolbar and breathing space.
-const PAD = { top: 32, side: 32, bottom: 128 };
 
 
 export const blobToDataUrl = (blob: Blob) =>
@@ -143,10 +141,12 @@ class Editor {
     const w = this.stage?.clientWidth ?? 0;
     const h = this.stage?.clientHeight ?? 0;
     if (!this.image) return { x: 0, y: 0, w, h, k: 1 };
-    const aw = Math.max(1, w - PAD.side * 2), ah = Math.max(1, h - PAD.top - PAD.bottom);
+    // Room around the image, and below it for the floating toolbar (theme.css).
+    const pad = themeLength('--stage-padding'), below = themeLength('--toolbar-clearance');
+    const aw = Math.max(1, w - pad * 2), ah = Math.max(1, h - pad - below);
     const k = Math.min(aw / this.image.naturalWidth, ah / this.image.naturalHeight);
     const iw = this.image.naturalWidth * k, ih = this.image.naturalHeight * k;
-    return { x: (w - iw) / 2, y: PAD.top + (ah - ih) / 2, w: iw, h: ih, k };
+    return { x: (w - iw) / 2, y: pad + (ah - ih) / 2, w: iw, h: ih, k };
   }
 
   draw() {
@@ -208,7 +208,7 @@ class Editor {
     const span = c.width + c.height;
     const at = ((performance.now() / 1400) % 1) * span * 1.6 - span * 0.3;
     const grad = g.createLinearGradient(at - 160, at * 0.4 - 80, at + 160, at * 0.4 + 80);
-    const sheen = themeColor('--sheen');
+    const sheen = themeVar('--sheen');
     grad.addColorStop(0, 'transparent');
     grad.addColorStop(0.5, sheen);
     grad.addColorStop(1, 'transparent');
@@ -229,7 +229,7 @@ class Editor {
     const ctx = this.ctx!;
     if (!s.points.length) return;
     const color = markColor(s.mark);
-    const halo = themeColor('--mark-halo');
+    const halo = themeVar('--mark-halo');
     ctx.globalAlpha = alpha;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -252,7 +252,7 @@ class Editor {
     ctx.lineWidth = unit * 0.5;
     ctx.strokeStyle = halo;
     ctx.stroke();
-    ctx.fillStyle = themeColor('--mark-text');
+    ctx.fillStyle = themeVar('--mark-text');
     ctx.font = `600 ${r * 1.15}px ${getComputedStyle(document.body).fontFamily}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

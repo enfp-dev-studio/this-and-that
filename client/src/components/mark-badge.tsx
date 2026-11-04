@@ -7,7 +7,7 @@ export const markBg = (mark: number) => MARK_BG[(mark - 1) % MARK_BG.length];
 
 export function MarkBadge({ mark, className }: { mark: number; className?: string }) {
   return (
-    <Badge className={cn('size-6 shrink-0 justify-center rounded-full border-0 p-0 text-xs font-semibold text-mark-text tabular-nums', markBg(mark), className)}>
+    <Badge variant="mark" size="mark" className={cn(markBg(mark), className)}>
       {mark}
     </Badge>
   );

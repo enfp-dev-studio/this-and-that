@@ -51,4 +51,15 @@
   body {
     @apply bg-background text-foreground antialiased;
   }
+  /* One icon size everywhere; shadcn components size their own icons. */
+  svg.lucide {
+    @apply size-4 shrink-0;
+  }
+}
+
+/* The editor's dotted backdrop. */
+@utility canvas-dots {
+  background-color: var(--canvas);
+  background-image: radial-gradient(var(--canvas-dot) 1px, transparent 1px);
+  background-size: var(--canvas-dot-gap) var(--canvas-dot-gap);
 }

@@ -7,10 +7,21 @@
  *                            server tells the models the marks by colour name
  *   --mark-halo, --mark-text the outline around a mark and its number
  *   --sheen                  the light that sweeps regions still being edited
+ *   layout: --panel-width, --toolbar-offset, --stage-padding,
+ *           --toolbar-clearance, --status-width, --slider-width, --card-width,
+ *           --canvas-dot-gap
  */
 
 :root {
   --radius: 0.75rem;
+  --panel-width: 20rem;
+  --toolbar-offset: 1.5rem;
+  --stage-padding: 2rem;
+  --toolbar-clearance: 8rem;
+  --status-width: 13rem;
+  --slider-width: 10rem;
+  --card-width: 28rem;
+  --canvas-dot-gap: 1.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);

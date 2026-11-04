@@ -24,7 +24,7 @@ export function App() {
       <TopBar />
       <div className="flex min-h-0 flex-1">
         <Stage />
-        <aside className="hidden w-80 shrink-0 border-l bg-background lg:block">
+        <aside className="hidden w-(--panel-width) shrink-0 border-l bg-background lg:block">
           <SidePanel />
         </aside>
       </div>

@@ -28,6 +28,11 @@ const buttonVariants = cva(
         "icon-xs": "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-8",
         "icon-lg": "size-10",
+        // This & That: one touch scale for the tablet (44 px targets), used everywhere.
+        touch: "h-11 px-4 has-[>svg]:px-3",
+        "icon-touch": "size-11",
+        // The hold-to-talk button.
+        "icon-xl": "size-16 rounded-full [&_svg:not([class*='size-'])]:size-7",
       },
     },
     defaultVariants: {

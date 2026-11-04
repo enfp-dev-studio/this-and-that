@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { MarkBadge } from '@/components/mark-badge';
 
 // Floating toolbar: mark tools, the big hold-to-talk button, and either the
-// status or (when a result is waiting) the before/after slider with Keep.
+// status or (when comparing) the before/after slider, with Keep for a result.
 export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number) => void }) {
   const s = useEditor();
   const recording = s.mode === 'recording';
@@ -23,38 +23,39 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
       : 'Listening… now draw'
     : working
       ? `Working… ${Math.round(s.elapsedMs / 1000)} s`
-      : review
-        ? 'Talk again to keep going'
-        : 'Hold or tap, then draw and talk';
+      : 'Hold or tap, then draw and talk';
+  const slider = <Slider className="w-(--slider-width)" value={[split * 100]} onValueChange={([v]) => onSplit(v / 100)} aria-label="Before and after" />;
 
   return (
-    <div className="absolute bottom-6 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Toggle className="size-11 rounded-full" pressed={s.penOnly} onPressedChange={(on) => editor.setPenOnly(on)} aria-label="Pen only">
-            <PenLine />
-          </Toggle>
-        </TooltipTrigger>
-        <TooltipContent>Pen only: fingers don’t draw (on once a stylus is used)</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon" className="size-11 rounded-full" onClick={() => editor.clearMarks()} disabled={working || review || !s.marks} aria-label="Clear marks">
-            <Eraser />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Clear marks</TooltipContent>
-      </Tooltip>
-      <MarkBadge mark={s.marks + 1} className={cn('mx-1 size-7', (working || review) && 'opacity-40')} />
+    <div className="absolute bottom-(--toolbar-offset) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+      <div className="flex items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Toggle size="icon-touch" className="rounded-full" pressed={s.penOnly} onPressedChange={(on) => editor.setPenOnly(on)} aria-label="Pen only">
+              <PenLine />
+            </Toggle>
+          </TooltipTrigger>
+          <TooltipContent>Pen only: fingers don’t draw (on once a stylus is used)</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-touch" className="rounded-full" onClick={() => editor.clearMarks()} disabled={working || review || !s.marks} aria-label="Clear marks">
+              <Eraser />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Clear marks</TooltipContent>
+        </Tooltip>
+        <MarkBadge mark={s.marks + 1} className={cn((working || review) && 'opacity-40')} />
+      </div>
 
-      <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-8" />
+      <Separator orientation="vertical" />
 
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
-            size="icon"
+            size="icon-xl"
             variant={recording ? 'destructive' : 'default'}
-            className={cn('size-16 rounded-full [&_svg:not([class*=size-])]:size-7', recording && 'animate-pulse')}
+            className={cn(recording && 'animate-pulse')}
             disabled={working}
             aria-label="Hold to talk"
             onPointerDown={(e) => {
@@ -70,24 +71,24 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
         <TooltipContent>Hold to talk, or tap to start and tap to send</TooltipContent>
       </Tooltip>
 
-      <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-8" />
+      <Separator orientation="vertical" />
 
       {review ? (
-        <div className="flex items-center gap-3 pr-1">
-          <Slider className="w-36" value={[split * 100]} onValueChange={([v]) => onSplit(v / 100)} aria-label="Before and after" />
-          <Button className="h-11 rounded-full px-5" onClick={() => editor.keep()}>
+        <div className="flex items-center gap-2">
+          {slider}
+          <Button size="touch" className="rounded-full" onClick={() => editor.keep()}>
             <Check />
             Keep
           </Button>
-          <Button variant="outline" className="h-11 rounded-full px-5" onClick={() => editor.discard()}>
+          <Button variant="outline" size="touch" className="rounded-full" onClick={() => editor.discard()}>
             <X />
             Discard
           </Button>
         </div>
       ) : s.compare ? (
-        <Slider className="mr-3 w-52" value={[split * 100]} onValueChange={([v]) => onSplit(v / 100)} aria-label="Before and after" />
+        slider
       ) : (
-        <span className="w-52 pr-3 text-sm text-muted-foreground tabular-nums">{status}</span>
+        <span className="w-(--status-width) text-sm text-muted-foreground tabular-nums">{status}</span>
       )}
     </div>
   );
