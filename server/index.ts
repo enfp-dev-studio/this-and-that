@@ -139,7 +139,9 @@ async function readBody(req: IncomingMessage) {
 
 // Experiments, each switchable per request (body.opts) or by env default.
 type Opts = { instant: boolean; speculate: boolean; muse: MuseMode };
-const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1', muse: (process.env.MUSE_MODE as MuseMode) ?? 'notools' };
+// Speculation is on: with part names as ASR keywords it was taken and right in
+// 9/10 bench replays and 5/6 browser runs, never taken wrong (README).
+const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE !== '0', muse: (process.env.MUSE_MODE as MuseMode) ?? 'notools' };
 
 // Marks drawn on reference pictures, and references pinned to every edit.
 type Refs = { marks: { ref: StoredImage; stroke: Stroke }[]; pinned: StoredImage[] };
@@ -278,15 +280,19 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   let out = local?.out ?? image;
   if (generative.length) {
     job.stage = 'edit';
+    const museFromEdits = () => {
+      const toMuse = promptEdits.filter((e) => generative.includes(e) || e.kind === 'reference');
+      const genStrokes = strokes.filter((s) => toMuse.some((e) => e.mark === s.mark));
+      return T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), toMuse, trace, opts.muse, extras));
+    };
     let edited: Buffer;
     if (spec && specMatches(spec.clauses, edits)) {
       job.speculation = 'right';
-      edited = await spec.edited;
+      // If the speculative call failed (a refusal, say), Spark's reading gets its own try.
+      edited = await spec.edited.catch((e) => (console.warn(`[${job.id}] speculative edit failed, editing from Spark's reading:`, e.message), (job.speculation = 'failed'), museFromEdits()));
     } else {
       if (spec) job.speculation = 'wrong';
-      const toMuse = promptEdits.filter((e) => generative.includes(e) || e.kind === 'reference');
-      const genStrokes = strokes.filter((s) => toMuse.some((e) => e.mark === s.mark));
-      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), toMuse, trace, opts.muse, extras));
+      edited = await museFromEdits();
     }
     if (spec === null && opts.speculate) job.speculation = 'skipped';
     writeFileSync(join(dir, 'edited.jpg'), edited);
