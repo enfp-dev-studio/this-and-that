@@ -15,7 +15,12 @@ export default defineConfig({
   resolve: { alias: { '@': fileURLToPath(new URL('./client/src', import.meta.url)) } },
   // Our own sample pictures ship as static files (/desk.png, /illust/…, /tasks/…).
   publicDir: fileURLToPath(new URL('./samples', import.meta.url)),
-  build: { outDir: '../dist', emptyOutDir: true },
+  build: {
+    outDir: '../dist',
+    emptyOutDir: true,
+    // The surface-edit page (3D model + the 2D pipeline) ships next to the app.
+    rollupOptions: { input: { main: fileURLToPath(new URL('./client/index.html', import.meta.url)), surface: fileURLToPath(new URL('./client/surface.html', import.meta.url)) } },
+  },
   // The pixels worker (instant edits, paste-back) is an ES module.
   worker: { format: 'es' },
   // The browser does the work; /api/meta goes to the Worker proxy (`wrangler dev`).

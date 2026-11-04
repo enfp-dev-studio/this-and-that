@@ -287,5 +287,56 @@ const before = $('before');
 before.addEventListener('pointerdown', () => baker?.peek(true));
 for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) before.addEventListener(ev, () => baker?.peek(false));
 
-Object.assign(window, { THREE, scene, camera, controls, renderer, strokes, submit, runtime, bakeDebug });
+// ── a recordable take (no pen needed) ─────────────────────────────────────
+// Glide the camera; timer-driven, so it finishes even when frames are throttled.
+function glide(pos: THREE.Vector3, target: THREE.Vector3, ms: number) {
+  const p0 = camera.position.clone(), t0 = controls.target.clone(), start = performance.now();
+  return new Promise<void>((done) => {
+    const step = () => {
+      const k = Math.min(1, (performance.now() - start) / ms), e = k * k * (3 - 2 * k);
+      camera.position.lerpVectors(p0, pos, e);
+      controls.target.lerpVectors(t0, target, e);
+      controls.update();
+      if (k < 1) setTimeout(step, 16);
+      else done();
+    };
+    step();
+  });
+}
+
+// Pen events along a loop around a surface point, through the same handlers a stylus uses.
+async function penLoop(c: THREE.Vector3, n: THREE.Vector3, rx: number, ry: number, ms = 900) {
+  const u = new THREE.Vector3(1, 0, 0).projectOnPlane(n).normalize(), v = new THREE.Vector3().crossVectors(n, u);
+  const r = el.getBoundingClientRect();
+  const pts = Array.from({ length: 46 }, (_, i) => {
+    const t = Math.PI / 2 + (i / 42) * 2 * Math.PI;
+    const p = c.clone().addScaledVector(u, rx * Math.cos(t)).addScaledVector(v, ry * Math.sin(t)).addScaledVector(n, 0.05).project(camera);
+    return [r.left + ((p.x + 1) / 2) * r.width + Math.sin(i * 0.7) * 1.5, r.top + ((1 - p.y) / 2) * r.height] as const;
+  });
+  const fire = (type: string, [x, y]: readonly [number, number], buttons: number) =>
+    el.dispatchEvent(new PointerEvent(type, { pointerId: 9, pointerType: 'pen', isPrimary: true, clientX: x, clientY: y, button: type === 'pointermove' ? -1 : 0, buttons, bubbles: true, cancelable: true }));
+  fire('pointerdown', pts[0], 1);
+  for (const q of pts.slice(1)) {
+    fire('pointermove', q, 1);
+    await new Promise((res) => setTimeout(res, ms / pts.length));
+  }
+  fire('pointerup', pts[pts.length - 1], 0);
+}
+
+const CREST = { c: new THREE.Vector3(-0.02, 0.41, 0.45), n: new THREE.Vector3(-0.07, 0.665, 0.744).normalize() };
+const VIEW_A = { pos: new THREE.Vector3(-0.8, 0.55, 3.45), target: new THREE.Vector3() };
+const VIEW_B = { pos: new THREE.Vector3(1.7, 1.55, 2.3), target: new THREE.Vector3(0, 0.25, 0) };
+// `voice`: 16 kHz PCM to send instead of the typed sentence.
+async function demoTake(text = '이 문양을 금색 초승달 엠블럼으로 바꿔 줘', voice?: Int16Array) {
+  while (baker?.undo());
+  clearStrokes();
+  await glide(VIEW_A.pos, VIEW_A.target, 900);
+  await penLoop(CREST.c, CREST.n, 0.2, 0.13);
+  caption.textContent = voice ? '' : `“${text}”`;
+  await submit(voice ? { pcm: voice } : { text });
+  await new Promise((r) => setTimeout(r, 600));
+  await glide(VIEW_B.pos, VIEW_B.target, 2600);
+}
+
+Object.assign(window, { THREE, scene, camera, controls, renderer, strokes, submit, runtime, bakeDebug, demoTake, glide });
 Object.defineProperties(window, { baker: { get: () => baker }, mesh: { get: () => mesh } });
