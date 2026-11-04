@@ -183,7 +183,9 @@ export class Sketch {
     const p = this.project(e, plane, surface);
     if (!p) return;
     e.preventDefault();
-    this.stage.renderer.domElement.setPointerCapture(e.pointerId);
+    try {
+      this.stage.renderer.domElement.setPointerCapture(e.pointerId);
+    } catch {} // synthetic events (replay) have no active pointer
     this.stage.controls.enabled = false; // palm on the screen must not orbit
     const viewDir = this.stage.camera.getWorldDirection(new THREE.Vector3());
     this.drawing = {

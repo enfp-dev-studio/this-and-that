@@ -5,6 +5,7 @@ import { Sketch, type Stroke } from './sketch';
 import { renderViews, strokeColor, type View } from './views';
 import { Voice } from './voice';
 import { applyPaint, renderModel } from './paint';
+import { penStroke, screenOf } from './replay';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -285,4 +286,32 @@ function demoHouse() {
   s([V(0, 0.85, 0.45), V(0, 0.85, -0.45)]);
 }
 
-Object.assign(window, { THREE, stage, sketch, builder, perceive, demoChair, demoHouse });
+// The chair drawn with pen events from the front, then the side, while the
+// caption shows what would be said; then the usual build.
+async function replayChair(say = '의자야, 등받이는 이렇게') {
+  const at = (x: number, y: number, z: number) => screenOf(stage, x, y, z);
+  const settle = async (view: 'front' | 'side' | 'three') => {
+    // Glide when frames are running; snap in a hidden or throttled tab.
+    const f0 = stage.frames;
+    await new Promise((r) => setTimeout(r, 100));
+    stage.goTo(view, stage.frames - f0 < 4);
+    await new Promise((r) => setTimeout(r, 650));
+  };
+  $('clear').click();
+  await settle('front');
+  caption.textContent = say.split(',')[0];
+  await penStroke(stage, [at(-0.26, 0.45, 0), at(0.26, 0.46, 0)]);
+  await penStroke(stage, [at(-0.23, 0.44, 0), at(-0.235, 0.0, 0)]);
+  await penStroke(stage, [at(0.23, 0.44, 0), at(0.225, 0.0, 0)]);
+  await penStroke(stage, [at(-0.22, 0.47, 0), at(-0.21, 0.95, 0), at(0.21, 0.96, 0), at(0.22, 0.47, 0)], 900);
+  await settle('side');
+  caption.textContent = say;
+  await penStroke(stage, [at(0, 0.45, 0.22), at(0, 0.45, -0.22)]);
+  await penStroke(stage, [at(0, 0.44, 0.2), at(0, 0.0, 0.2)]);
+  await penStroke(stage, [at(0, 0.0, -0.2), at(0, 0.45, -0.2), at(0, 0.95, -0.3)], 800);
+  await settle('three');
+  caption.textContent = `“${say}”`;
+  await perceive(say);
+}
+
+Object.assign(window, { THREE, stage, sketch, builder, perceive, demoChair, demoHouse, replayChair });

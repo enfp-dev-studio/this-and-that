@@ -74,15 +74,25 @@ export class Stage {
   }
 
   // Fly to a named view around the current target.
-  goTo(view: 'front' | 'side' | 'top' | 'three') {
+  goTo(view: 'front' | 'side' | 'top' | 'three', instant = false) {
     const t = this.controls.target.clone();
     const d = this.camera.position.distanceTo(t);
     const dir = { front: [0, 0.08, 1], side: [1, 0.08, 0], top: [0, 1, 0.0001], three: [0.8, 0.55, 1] }[view];
     const to = t.clone().add(new THREE.Vector3(...dir).normalize().multiplyScalar(d));
+    if (instant) {
+      this.tween = null;
+      this.camera.position.copy(to);
+      this.camera.lookAt(t);
+      this.camera.updateMatrixWorld();
+      return;
+    }
     this.tween = { from: this.camera.position.clone(), to, tFrom: t.clone(), tTo: t, t0: performance.now(), ms: 450 };
   }
 
+  frames = 0;
+
   private frame(now: number) {
+    this.frames++;
     if (this.tween) {
       const k = Math.min(1, (now - this.tween.t0) / this.tween.ms);
       const e = 1 - Math.pow(1 - k, 3);
