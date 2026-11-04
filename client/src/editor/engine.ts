@@ -68,6 +68,7 @@ export type Snapshot = {
   task: string; // the preset being done, or "Free"
   trials: Trial[];
   failure: string | null; // why the last edit didn't come through; its marks are kept for "Try again"
+  resumable: boolean; // a picture from an earlier visit is kept in this browser
 };
 
 type Job = {
@@ -142,6 +143,7 @@ class Editor {
     task: 'Free',
     trials: loadTrials(),
     failure: null,
+    resumable: false,
   };
   private listeners = new Set<() => void>();
   onError: (message: string) => void = () => {};
@@ -190,6 +192,35 @@ class Editor {
 
   // The history and references of this picture, kept in IndexedDB.
   private session = crypto.randomUUID().slice(0, 8);
+
+  constructor() {
+    runtime.lastSession().then((last) => last && this.snapshot.mode === 'empty' && this.set({ resumable: true }), () => {});
+  }
+
+  // Back to the picture, its history and references from the last visit
+  // (everything was kept in this browser).
+  async resume() {
+    if (this.snapshot.mode !== 'empty') return;
+    this.set({ resumable: false }); // the button goes at once; the picture follows
+    const last = await runtime.lastSession();
+    if (!last) return this.set({ resumable: false });
+    const urls = await Promise.all(last.versions.map((id) => runtime.restoreImage(id)));
+    const versions: Version[] = last.versions.flatMap((id, i) => (urls[i] ? [{ url: urls[i]!, imageId: Promise.resolve(id) }] : []));
+    if (!versions.length) return this.set({ resumable: false }), this.onNotice('That picture is no longer in this browser.');
+    const refs: Ref[] = (
+      await Promise.all(last.refs.map(async (r) => {
+        const url = await runtime.restoreImage(r.imageId);
+        return url ? [{ id: r.id, url, imageId: Promise.resolve(r.imageId), pinned: r.pinned }] : [];
+      }))
+    ).flat();
+    const index = Math.min(versions.length - 1, Math.max(0, last.index));
+    this.session = last.id;
+    await this.show(versions[index].url);
+    this.view = { zoom: 1, x: 0, y: 0 };
+    this.set({ mode: 'idle', zoom: 1, versions, index, refs, resumable: false, result: null, compare: false, marks: 0, ...this.emptyPanel() });
+    this.loadParts(versions[index]);
+    this.draw();
+  }
   private remembering = false;
   private remember() {
     if (this.remembering) return;
@@ -757,7 +788,8 @@ class Editor {
     this.set({ zoom: 1 });
     const v: Version = { url, imageId: upload(url) };
     v.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
-    this.set({ mode: 'idle', versions: [v], index: 0, result: null, compare: false, marks: 0, ...this.emptyPanel() });
+    if (this.snapshot.versions.length) this.session = crypto.randomUUID().slice(0, 8); // a new picture, a new history
+    this.set({ mode: 'idle', versions: [v], index: 0, result: null, compare: false, marks: 0, resumable: false, ...this.emptyPanel() });
     this.loadParts(v);
     this.draw();
   }

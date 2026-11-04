@@ -17,7 +17,7 @@ import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoke
 import { applyLocal, LOCAL_OPS } from './local';
 import { audioDurationMs, canEncodeVideo, warmUpVideo, colorOf, composeWithRefs, cropAround, dataUrlOf, drawn, encode, fromPixels, jpegUrl, keyFrames, maxVolumeDb, outlineImage, pixels, renderVideo, toWav, type Source, type Stroke } from './render';
 import { Trace } from './trace';
-import { get, put, saveBlob } from './store';
+import { all, get, loadBlob, put, saveBlob } from './store';
 
 const MAX_SIDE = 2048;
 const MAX_UPLOAD_BYTES = 40e6;
@@ -417,6 +417,29 @@ export const runtime = {
   },
 
   imageUrl: (id: string) => images.get(id)?.url ?? '',
+
+  // A picture kept in this browser (IndexedDB + OPFS), back under its own id,
+  // with its part names if they were found. Null if it is gone.
+  async restoreImage(id: string): Promise<string | null> {
+    if (images.has(id)) return images.get(id)!.url;
+    const rec = await get<{ type?: string }>('images', id);
+    const blob = rec && (await loadBlob(`images/${id}.${rec.type === 'image/png' ? 'png' : 'jpg'}`));
+    if (!blob) return null;
+    const bitmap = await createImageBitmap(blob);
+    let small: Promise<Small> | null = null;
+    // Stored at its working size, so the client's coordinates need no scaling (k = 1).
+    const img: StoredImage = { id, bitmap, width: bitmap.width, height: bitmap.height, k: 1, url: URL.createObjectURL(blob), get small() { return (small ??= smallCopy(bitmap)); } };
+    const parts = (await get<{ parts: Part[] }>('parts', id))?.parts;
+    if (parts) Object.assign(img, { parts: Promise.resolve(parts), partsReady: parts });
+    images.set(id, img);
+    return img.url;
+  },
+
+  // The most recent session with a picture in it.
+  async lastSession() {
+    const sessions = await all<{ id: string; at: number; versions: string[]; index: number; refs: { id: string; imageId: string; pinned: boolean }[] }>('sessions');
+    return sessions.filter((x) => x.versions?.length).sort((a, b) => b.at - a.at)[0] ?? null;
+  },
 
   // Asking starts the background parts pass, whose names Voice Transcribe listens for.
   async parts(imageId: string): Promise<Part[]> {

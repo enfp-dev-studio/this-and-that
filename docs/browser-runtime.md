@@ -14,6 +14,8 @@ On the `browser-runtime` branch the whole app runs in the browser: the static bu
 | `server/3d/*` | `perceive.ts` (3D perception + Muse Image painting) |
 | `out/jobs/<id>/…` files | `store.ts`: IndexedDB (`images`, `jobs`, `traces`, `parts`, `sessions` with versions and references, `models` for 3D) and OPFS for blobs (`images/<id>.jpg`, `jobs/<id>/{voice.wav,video.mp4,edited.jpg}`); `navigator.storage.persist()` is asked on load |
 
+After a reload the empty state offers "Continue where you left off": the last session's versions and references come back from OPFS under their own ids (with their part names from IndexedDB), and Undo/Redo work across them.
+
 The mic is captured once as 16 kHz PCM (`editor/live-asr.ts`): it streams to realtime transcription, and the same samples are the voice track of Spark's video and the batch fallback's WAV. The UI is unchanged except for one shadcn Dialog that asks for the demo passcode (`components/passcode-gate.tsx`) and a toast when a demo limit is reached.
 
 Limits the app keeps to (the Worker reports them at `GET /api/meta/config` and checks what it can see itself, see [deploy-cloudflare.md](deploy-cloudflare.md)): at most 6 marks per edit (one per mark colour), a take of at most 20 s (it is sent when the time is up), pictures up to 40 MB / 60 MP (scaled to ≤2048 px before anything is sent). Each take (an edit, a typed whole-picture edit, a 3D build, a paint) is counted once at `POST /api/meta/job` against the free daily jobs; when they are used up the take doesn't start and a toast says "Today's free quota is used up". A small info button beside the name opens the privacy note.

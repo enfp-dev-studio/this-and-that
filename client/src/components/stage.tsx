@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { ImageIcon, Maximize } from 'lucide-react';
+import { History, ImageIcon, Maximize } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { SAMPLES } from '@/editor/presets';
 import { useEditor } from '@/hooks/use-editor';
@@ -76,6 +76,12 @@ export function Stage() {
       {s.mode === 'empty' ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-4">
           <p className="text-sm text-muted-foreground">Draw on it. Say what you want.</p>
+          {s.resumable && (
+            <Button size="touch" variant="outline" onClick={() => editor.resume()}>
+              <History />
+              Continue where you left off
+            </Button>
+          )}
           <Button size="touch" onClick={() => editor.open(SAMPLES[0].url)}>
             <ImageIcon />
             Try a sample
