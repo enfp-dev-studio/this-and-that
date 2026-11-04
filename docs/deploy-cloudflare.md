@@ -64,7 +64,7 @@ The counters live in one SQLite-backed Durable Object (`Limiter`, a single globa
    ```
 6. Build the client with the Worker URL baked in. The client reads `import.meta.env.VITE_API_BASE`; if it is empty, the client calls `/api/meta` on its own origin:
    ```sh
-   VITE_API_BASE=https://this-and-that-api.<sub>.workers.dev npm run build
+   VITE_API_BASE=https://this-and-that-api.<sub>.workers.dev npm run build:pages
    ```
 7. Create the Pages project (first time only), then deploy:
    ```sh
