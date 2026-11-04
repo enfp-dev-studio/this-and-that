@@ -9,6 +9,7 @@ import { LiveAsr } from './live-asr';
 import { markColor, themeVar, themeLength, watchTheme } from './colors';
 import { loadTrials, saveTrials, type Method, type Round, type Trial } from './experiment';
 import type { Task } from './presets';
+import { LAB } from '../lab';
 
 export type Point = { x: number; y: number; t: number };
 export type Stroke = {
@@ -356,15 +357,19 @@ class Editor {
     ctx.globalAlpha = 1;
   }
 
-  // ---------- parts: hover a part to see its name ----------
+  // ---------- parts: background info, shown only with ?lab ----------
 
+  // Asking starts the server's parts pass, whose names Voice Transcribe
+  // listens for. The parts are never shown in the everyday app and never
+  // suggest a selection: what the user draws and says decides. With ?lab,
+  // hovering shows the part under the pen, as a debug aid.
   private async loadParts(v: Version) {
     try {
       const imageId = await v.imageId;
       const { parts } = await (await fetch(`/api/images/${imageId}/parts`)).json();
-      if (this.current() === v) this.parts = { url: v.url, list: parts ?? [] };
+      if (LAB && this.current() === v) this.parts = { url: v.url, list: parts ?? [] };
     } catch {
-      // Optional: without parts there is just no hover label.
+      // Optional: without parts there are just no keywords (and no lab hover label).
     }
   }
 

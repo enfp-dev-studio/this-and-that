@@ -109,6 +109,8 @@ A mark can select a thing or draw its new shape. Spark gives a mark kind `sketch
 
 The toolbar's **Point / Shape** toggle forces the intent (neither pressed = auto): a Shape-pen mark is always a sketch, a Point-pen mark never is.
 
+The part tags (a background Spark pass per picture) are background information only: never shown in the everyday app (hover labels and part outlines appear only with `?lab`, as a debug aid), never a snap or suggested selection, and never above what was drawn and said. Spark gets them last, as "optional vocabulary for naming things", with the rule that the strokes and words decide and that a part under a mark doesn't make it a selection. SAM's target and the paste region come from the stroke alone. The one place the names help is invisible: Voice Transcribe keywords.
+
 `scripts/bench-sketch.ts`: the knight's left pauldron redrawn as three spikes while saying "이 어깨갑주를 이렇게 뾰족하게 바꿔 줘". Before this change Spark called it an object mark ("make pointed") and Muse added one generic spike; now Spark picks `sketch` on its own (2/2 auto runs) and the result follows the drawn spikes (4/4 runs reshaped along the line; how tall the spikes come out varies by run). Results: `out/sketch/{old-auto,new-auto,new-shape,new-auto-2,new-shape-2}.jpg` (original | marks | result).
 
 ## Same model, different input (benchmark)

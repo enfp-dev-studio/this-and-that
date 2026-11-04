@@ -67,7 +67,7 @@ function markList(strokes: Stroke[], withTimes: boolean, places?: Map<number, st
 const REF_RULES = `The video shows reference picture(s) on the left and the picture to edit on the right. A mark on a reference shows what something should look like (an ornament, a hairpin, a lace pattern, a face or pose): give it kind "reference" and say in target what it shows. The instruction for the related mark on the picture to edit must name the reference mark, e.g. "Redesign the hairpin to match reference mark 1".`;
 
 const RULES = `Deictic words such as 이거/이것/이건/여기/이쪽 (this, here) and 저거/저건/저기/저쪽 (that, there) refer to the mark being drawn at the moment the word is spoken, not to the nearest object or to the order of the marks. One instruction can span several marks (e.g. "move this over here" with a circle and an arrow): then give each mark its part of the change. A mark the person said nothing about gets an instruction inferred from the other marks, or "No change".
-A mark can draw the new shape itself rather than select something: the person says so (이렇게, 이 모양으로, 이런 모양, 이렇게 생기게, like this, this shape), and the stroke is a deliberate contour (an outline, spikes, a silhouette, an added detail) traced over or beside the object, not a loose loop or scribble around it. Give such a mark kind "sketch" and an instruction to reshape the target to follow the drawn outline. A loop drawn just to say "this one" is an object mark.`;
+A mark can draw the new shape itself rather than select something: the person says so (이렇게, 이 모양으로, 이런 모양, 이렇게 생기게, like this, this shape), and the stroke is a deliberate contour (an outline, spikes, a silhouette, an added detail) traced over or beside the object, not a loose loop or scribble around it. Give such a mark kind "sketch" and an instruction to reshape the target to follow the drawn outline, even when the stroke lies over an existing part. A loop drawn just to say "this one" is an object mark.`;
 
 // Primary path: Spark watches the drawing video with the voice track.
 // A transcript from Voice Transcribe, when given, guards against mishearing.
@@ -76,10 +76,10 @@ export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { mo
   const text = `This video shows a person refining a picture. While speaking (often Korean), they draw numbered marks on it with a pen; each mark has its own colour and a numbered badge, and a white dot shows the pen tip while it is moving. Listen to the audio and watch when each mark is drawn.
 
 ${RULES}${opts.places ? `\n${REF_RULES}` : ''}
-${heard}${opts.parts ?? ''}
+${heard}
 The marks:
 ${markList(strokes, !!opts.withTimes, opts.places)}
-
+${opts.parts ?? ''}
 For every mark, report ${opts.heard === false ? '' : 'what was said while drawing it and '}the change wanted there. Keep it short.`;
   const schema = opts.transcript || opts.ops ? editsSchema({ heard: opts.heard !== false, transcript: !opts.transcript, ops: opts.ops }) : EDITS_SCHEMA;
   return sparkJson<{ transcript?: string; edits: Edit[] }>({ model: opts.model, effort: opts.effort, content: [{ type: 'text', text }, videoPart(mp4, opts.fps)], schema, trace: opts.trace, label: 'spark video' });
@@ -407,8 +407,9 @@ export function partKeywords(parts: Part[], max = 80) {
   return [...new Set(words.filter((w): w is string => !!w && w.split(/\s+/).length <= 2))].slice(0, max);
 }
 
-// For Spark's mapping: the named parts each mark covers (the most specific
-// first) and their pairs, so "이 장식" or "match the other one" resolve.
+// A weak, last-resort naming hint for Spark: the named parts each mark covers
+// (the most specific first) and their pairs. The strokes and the words decide;
+// parts never pick SAM's target or the paste region (both come from the stroke).
 export function partsHint(strokes: Stroke[], parts: Part[], width: number, height: number) {
   const byId = new Map(parts.map((p) => [p.id, p]));
   const px = (p: Part) => ({ left: (p.box[0] * width) / 1000, top: (p.box[1] * height) / 1000, right: (p.box[2] * width) / 1000, bottom: (p.box[3] * height) / 1000 });
@@ -432,5 +433,5 @@ export function partsHint(strokes: Stroke[], parts: Part[], width: number, heigh
     return covered.length ? `- mark ${s.mark} is over: ${covered.join('; ')}` : '';
   });
   const text = lines.filter(Boolean).join('\n');
-  return text ? `\nNamed parts under the marks on the picture (found automatically, may be imperfect; use the names when they fit). They say WHAT a mark is about, not that the mark only selects it: a mark over a part can still be a sketch of its new shape.\n${text}\n` : '';
+  return text ? `\nOptional vocabulary for naming things. The person's strokes (their exact shape and where they are) and their words always decide what the mark means and what to change. Never treat a mark as a selection just because a named part is under it.\n${text}\n` : '';
 }
