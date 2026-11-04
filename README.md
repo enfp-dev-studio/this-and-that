@@ -8,7 +8,7 @@ A time-boxed spike (2026-11-04, 23:30 → 03:00 KST) for the Meta Global AI Deve
 
 | Step | Model | What it does |
 |---|---|---|
-| Draw | (three.js) | Pen or left mouse draws; fingers or right mouse orbit, two fingers / middle mouse pan and zoom. Each stroke is projected onto a drawing plane picked at pen-down: the model's surface under the pen, else a plane through the nearest existing stroke point (so strokes connect in depth), else through the orbit target. The plane faces the camera (시점면) or lies flat (바닥면) and shows as a faint grid. Strokes are 3D polylines with ids and timestamps |
+| Draw | (three.js) | Pen or left mouse draws; fingers or right mouse orbit, two fingers / middle mouse pan and zoom. Each stroke is projected onto a drawing plane picked at pen-down: the model's surface under the pen, else a plane through the nearest existing stroke point (so strokes connect in depth), else through the orbit target. The plane faces the camera (시점면) or lies flat (바닥면) and shows as a faint grid. Strokes are 3D polylines with ids and timestamps. **QuickShape:** hold the pen still for 0.4 s at the end of a stroke and it snaps, in its drawing plane, to a straight line, circle, ellipse, arc or straight arrow, but only when the fit error is small (a zigzag, an L or a square stays as drawn). It flashes blue; 되돌리기 first brings back the stroke as drawn |
 | Hear | **Muse Voice Transcribe** (realtime) | Hold the mic button (or Space, or tap to toggle): 16 kHz PCM streams to the server and on to the realtime endpoint, with live captions. The final text is ready ~0.35 s after release; batch transcription of the same audio is the fallback (~2 s) |
 | See | (three.js) | On release, the strokes (and the model, when editing) are rendered from FRONT, SIDE, TOP (orthographic), two 3/4 views and the user's view, each stroke in its own color with its id number. The six thumbnails show while Spark works |
 | Understand | **Muse Spark 1.2** (minimal effort, JSON schema, streaming) | Gets the six images, the transcript, and per stroke its id, drawing plane, the direction it was drawn from, 3D bbox and 8 sampled points. Answers `{subject, say, parts[]}`; each part has a primitive (box, cylinder, sphere, cone, capsule, extrude of a stroke outline), center, size, rotation, color, material and the stroke ids it explains. When editing it also gets the current part list and returns the updated one |
@@ -33,13 +33,14 @@ Quality is similar; 1.3 at low effort was the most consistent about leg counts. 
 ```sh
 npm install
 cp ../this-and-that/.env .env      # MODEL_API_KEY=...
-npm run server                     # API on :8795
-npm run dev                        # Vite on :5185, proxies /api
+npm start                          # builds, then serves the app and the API on :5185
 ```
 
-Open http://localhost:5185. **Tablet:** `adb reverse tcp:5185 tcp:5185`, then open `http://localhost:5185` in Chrome on the tablet (localhost, so the microphone works without HTTPS). `npm start` builds and serves everything on :8795 instead.
+Open http://localhost:5185. **Tablet:** `adb reverse tcp:5185 tcp:5185`, then open `http://localhost:5185` in Chrome on the tablet (localhost, so the microphone works without HTTPS).
 
-Without a pen or mic: draw with the mouse, type the sentence in the box and press Enter. In the console, `demoChair()` / `demoHouse()` add scripted front + side sketches.
+For development instead: `npm run server` (API on :8795) and `npm run dev` (Vite on :5185 with hot reload, proxies `/api`). Both use :5185, so run one or the other.
+
+Without a pen or mic: draw with the mouse, type the sentence in the box and press Enter. In the console, `demoChair()` / `demoHouse()` add scripted front + side sketches, `replayChair()` draws the chair with pen events and builds it, and `quickShapeDemo()` draws five wobbly shapes twice (lifted at once, then held still).
 
 `node --env-file=.env server/bench.ts out/jobs/<id> minimal` replays a saved request (`COPIES=1` for a single call). Every request and answer is saved under `out/jobs/`.
 
@@ -70,6 +71,7 @@ Without a pen or mic: draw with the mouse, type the sentence in the box and pres
 - `client/src/sketch.ts`: drawing planes, stroke capture, 3D polylines
 - `client/src/views.ts`: the six labeled renders for Spark
 - `client/src/build.ts`: parts → low-poly meshes, grow / morph / shrink animations
+- `client/src/quickshape.ts`: stroke → line / circle / ellipse / arc / arrow fitting
 - `client/src/fit.ts`: rotation sign check against the strokes
 - `client/src/paint.ts`: model render, mask, projective painting
 - `client/src/voice.ts`: hold-to-talk, PCM streaming, WAV fallback
