@@ -219,8 +219,10 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
         const near = toModel(tr[0]);
         const mid = near.o.min.map((m, a) => (m + near.o.max[a]) / 2);
         const base = Math.max(Math.abs(p.radii?.[0] ?? 0), 0.07 * lengthOf(tr));
-        const root = tr[0].map((v, a) => v + unit(sub(mid, tr[0]))[a] * (near.d + base));
-        const path = [root, ...tr].map((x) => sub(x, root).map(r3));
+        // A curve that already crosses the model (a guard across a blade) is attached as drawn.
+        const crosses = tr.some((x) => toModel(x).d < 0.005);
+        const root = crosses ? tr[0] : tr[0].map((v, a) => v + unit(sub(mid, tr[0]))[a] * (near.d + base));
+        const path = (crosses ? tr : [root, ...tr]).map((x) => sub(x, root).map(r3));
         q = { ...p, center: root.map(r3), rotation: [0, 0, 0], path };
         log(`[fit] ${p.name}: the drawn curve (${path.length} points)`);
         return taper(q);

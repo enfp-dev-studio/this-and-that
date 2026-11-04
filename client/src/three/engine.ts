@@ -92,7 +92,7 @@ class Engine3D {
       // After a build the model turns slowly until the user touches the scene.
       stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
       this.highlightOnHover(stage);
-      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), loadModel: (url: string, name?: string) => this.loadModel(url, name), drawGuides: (view: ViewName, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
+      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), loadModel: (url: string, name?: string, height?: number) => this.loadModel(url, name, height), drawGuides: (view: ViewName, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
     }
     return () => {};
   }
@@ -175,18 +175,25 @@ class Engine3D {
   // A high-quality model to edit (the Sample model): sized to stand about half a
   // metre tall on the ground, then edits are drawn on and around it; Spark sees
   // it as one part it keeps as it is.
-  async loadModel(url: string, name = 'imported model') {
+  // `height`: how tall it stands (m); a model lying along x or z (a sword) is stood upright.
+  async loadModel(url: string, name = 'imported model', height = 0.5) {
     if (!this.stage) return;
     try {
       this.clear();
       const gltf = await new GLTFLoader().loadAsync(url);
-      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const turn = new THREE.Group();
+      turn.add(gltf.scene);
+      const s0 = new THREE.Box3().setFromObject(gltf.scene).getSize(new THREE.Vector3());
+      if (s0.z > s0.y && s0.z >= s0.x) turn.rotation.x = -Math.PI / 2;
+      else if (s0.x > s0.y) turn.rotation.z = Math.PI / 2;
+      turn.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(turn);
       const size = box.getSize(new THREE.Vector3());
-      const k = 0.5 / Math.max(size.y, 0.001);
-      gltf.scene.scale.setScalar(k);
-      gltf.scene.position.set(-((box.min.x + box.max.x) / 2) * k, -box.min.y * k + 0.02, -((box.min.z + box.max.z) / 2) * k);
+      const k = height / Math.max(size.y, 0.001);
+      turn.scale.setScalar(k);
+      turn.position.set(-((box.min.x + box.max.x) / 2) * k, -box.min.y * k + 0.02, -((box.min.z + box.max.z) / 2) * k);
       const group = new THREE.Group();
-      group.add(gltf.scene);
+      group.add(turn);
       this.imported = group;
       this.stage.model.add(group);
       group.updateMatrixWorld(true);
@@ -215,6 +222,9 @@ class Engine3D {
     return parts.map((p) => {
       if (old.has(p.name) || (p.primitive !== 'tube' && p.primitive !== 'membrane')) return p;
       const root = new THREE.Vector3().fromArray(p.center);
+      // A tube that already runs through the model (a guard across a blade) stays as drawn.
+      const box = new THREE.Box3().setFromObject(model);
+      if (p.primitive === 'tube' && p.path?.some((q) => box.containsPoint(root.clone().add(new THREE.Vector3().fromArray(q))))) return p;
       const dir = mid.clone().sub(root).normalize();
       ray.set(root.clone().addScaledVector(dir, -0.3), dir);
       const hit = ray.intersectObjects(meshes, false)[0];

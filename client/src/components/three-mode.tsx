@@ -17,12 +17,13 @@ import { BottomBar, PenModes, TalkButton, TypeToggle } from '@/components/toolba
 import { EmptyState } from '@/components/stage';
 import { Separator } from '@/components/ui/separator';
 
-// The Sample model: Khronos glTF Sample Assets' SciFiHelmet (samples/3d/SciFiHelmet, textures at 1024 px).
-const SAMPLE_MODEL = {
-  url: '/3d/SciFiHelmet/SciFiHelmet.gltf',
-  name: 'sci-fi helmet',
-  credit: 'Sample model: “SciFiHelmet” by Michael Pavlovic, CC0 1.0 (converted to glTF by Norbert Nopper, CC0 1.0), from the Khronos glTF Sample Assets.',
-};
+// Sample models to edit (samples/3d, CC0): Poly Haven's Antique Estoc and the
+// Khronos glTF Sample Assets' SciFiHelmet (textures at 1024 px).
+const SAMPLE_MODELS = [
+  { url: '/3d/AntiqueEstoc/antique_estoc_1k.gltf', name: 'sword', height: 0.9, label: 'Sample model: a sword' },
+  { url: '/3d/SciFiHelmet/SciFiHelmet.gltf', name: 'sci-fi helmet', height: 0.5, label: 'Sample model: a sci-fi helmet' },
+];
+const CREDITS = 'Sample models, CC0: “Antique Estoc” by Ulan Cabanilla (modeling) and James Ray Cock (texturing), Poly Haven; “SciFiHelmet” by Michael Pavlovic (converted to glTF by Norbert Nopper), Khronos glTF Sample Assets.';
 
 const VIEWS: { value: ViewName; label: string }[] = [
   { value: 'front', label: 'Front' },
@@ -218,11 +219,13 @@ function OpenSketchMenu({ disabled }: { disabled: boolean }) {
             <FileUp />
             Open file… (.glb, to sketch over)
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => engine3d.loadModel(SAMPLE_MODEL.url, SAMPLE_MODEL.name)}>
-            <Box />
-            Sample model (a sci-fi helmet to edit)
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => engine3d.onNotice(SAMPLE_MODEL.credit)}>
+          {SAMPLE_MODELS.map((m) => (
+            <DropdownMenuItem key={m.url} onSelect={() => engine3d.loadModel(m.url, m.name, m.height)}>
+              <Box />
+              {m.label}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuItem onSelect={() => engine3d.onNotice(CREDITS)}>
             <Info />
             Credits
           </DropdownMenuItem>

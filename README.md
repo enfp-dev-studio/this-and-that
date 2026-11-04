@@ -147,9 +147,11 @@ Text-only Muse Image got every change right on the first try, so the win is not 
 
 MIT, see [LICENSE](LICENSE).
 
-### Third-party sample model
+### Third-party sample models
 
-3D mode's **Open → Sample model** loads `samples/3d/SciFiHelmet/`, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
+3D mode's **Open → Sample model: a sword** loads `samples/3d/AntiqueEstoc/`, [Antique Estoc](https://polyhaven.com/a/antique_estoc) from Poly Haven, [CC0](https://polyhaven.com/license): modeling by Ulan Cabanilla, texturing by James Ray Cock (glTF with 1k textures; see `CREDITS.md` beside it).
+
+**Open → Sample model: a sci-fi helmet** loads `samples/3d/SciFiHelmet/`, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
 
 > © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Michael Pavlovic for Everything
 > © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Norbert Nopper for Conversion to glTF
