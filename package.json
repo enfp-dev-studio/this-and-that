@@ -1,0 +1,21 @@
+{
+  "name": "this-and-that",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "node --env-file-if-exists=.env server/index.ts",
+    "build": "vite build",
+    "start": "vite build && node --env-file-if-exists=.env server/index.ts"
+  },
+  "dependencies": {
+    "@meta-sam/parser": "^0.1.0",
+    "openai": "^7.50.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.2.0",
+    "@types/node": "^24.0.0"
+  }
+}
