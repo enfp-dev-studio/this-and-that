@@ -9,6 +9,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/co
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SidePanel } from '@/components/side-panel';
+import { TasksMenu } from '@/components/tasks';
 
 function IconButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
@@ -56,6 +57,7 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <TasksMenu disabled={busy} />
         <Tooltip>
           <TooltipTrigger asChild>
             <Toggle variant="outline" size="touch" pressed={s.experiment} onPressedChange={(on) => editor.setExperiment(on)} disabled={busy} aria-label="Experiment mode">

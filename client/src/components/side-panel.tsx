@@ -9,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MarkBadge } from '@/components/mark-badge';
 import { ExperimentCard } from '@/components/experiment-card';
+import { TaskCard } from '@/components/tasks';
 import { refLetter } from '@/components/ref-panel';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
@@ -36,6 +37,7 @@ export function SidePanel() {
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-4 p-4">
         {s.experiment && <ExperimentCard />}
+        <TaskCard />
         <Card>
           <CardHeader>
             <CardTitle>Caption</CardTitle>

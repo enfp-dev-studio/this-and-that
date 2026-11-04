@@ -8,6 +8,7 @@ import { postJson } from './api';
 import { LiveAsr } from './live-asr';
 import { markColor, themeVar, themeLength, watchTheme } from './colors';
 import { loadTrials, saveTrials, type Method, type Round, type Trial } from './experiment';
+import type { Task } from './presets';
 
 export type Point = { x: number; y: number; t: number };
 export type Stroke = {
@@ -587,8 +588,19 @@ class Editor {
     this.set({ method });
   }
 
-  setTask(task: string) {
-    this.set({ task });
+  // A preset: its picture as a new history, its references (the first
+  // unpinned one opened beside the picture), and its name for the trials.
+  async loadTask(task: Task | null) {
+    if (this.snapshot.mode === 'recording' || this.snapshot.mode === 'processing') return;
+    if (!task) return this.set({ task: 'Free' });
+    await this.open(task.image);
+    const refs: Ref[] = task.refs.map((r) => {
+      const ref: Ref = { id: crypto.randomUUID().slice(0, 8), url: r.url, imageId: upload(r.url), pinned: r.pinned };
+      ref.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
+      return ref;
+    });
+    this.set({ task: task.title, refs });
+    await this.openRef(refs.find((r) => !r.pinned)?.id ?? null);
   }
 
   // The typed way: the request as text, Muse Image edits the whole picture.
@@ -688,7 +700,7 @@ class Editor {
         // An arrow's SAM mask is whatever it crossed: stop highlighting it.
         for (const e of job.edits) {
           const s = this.strokes.find((s) => s.mark === e.mark);
-          if (s) s.settled = e.kind === 'pointer' || /^no change/i.test(e.instruction);
+          if (s) s.settled = e.kind === 'pointer' || e.kind === 'reference' || /^no change/i.test(e.instruction);
         }
       }
       if (job.localMarks?.length) patch.localMarks = job.localMarks;

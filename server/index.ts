@@ -210,8 +210,10 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   results.forEach((r, i) => r.mask && masks.set(strokes[i].mark, r.mask));
   const seg = { masks, width: small.width, height: small.height };
 
-  // Instant edits run locally and are shown right away.
-  let generative = edits.filter((e) => !/^no change/i.test(e.instruction));
+  // Instant edits run locally and are shown right away. A reference mark on
+  // the picture (the good cuff to copy) is told to Muse but never changed.
+  const promptEdits = edits.filter((e) => !/^no change/i.test(e.instruction));
+  let generative = promptEdits.filter((e) => e.kind !== 'reference');
   let local: Awaited<ReturnType<typeof applyLocal>> | null = null;
   if (opts.instant) {
     // A local edit where a generative one may also change things (a recolored
@@ -246,8 +248,9 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
       edited = await spec.edited;
     } else {
       if (spec) job.speculation = 'wrong';
-      const genStrokes = strokes.filter((s) => generative.some((e) => e.mark === s.mark));
-      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), generative, trace, opts.muse, extras));
+      const toMuse = promptEdits.filter((e) => generative.includes(e) || e.kind === 'reference');
+      const genStrokes = strokes.filter((s) => toMuse.some((e) => e.mark === s.mark));
+      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), toMuse, trace, opts.muse, extras));
     }
     if (spec === null && opts.speculate) job.speculation = 'skipped';
     writeFileSync(join(dir, 'edited.jpg'), edited);
@@ -408,6 +411,10 @@ createServer(async (req, res) => {
       return sendBytes(res, 'image/png', await overlayPng(await mark, Number(url.searchParams.get('mark') ?? 1)));
     }
     if (url.pathname === '/api/sample') return sendFile(res, join(root, 'samples', 'desk.png'));
+    // Our own sample pictures (task presets and their references).
+    if (parts[0] === 'api' && parts[1] === 'samples' && parts.length > 2 && parts.slice(2).every((p) => /^[\w.-]+$/.test(p) && p !== '..')) {
+      return sendFile(res, join(root, 'samples', ...parts.slice(2)));
+    }
     // Built client (npm run build), so one port serves everything.
     return sendFile(res, join(distDir, url.pathname === '/' ? 'index.html' : url.pathname.replace(/\.\./g, '')));
   } catch (e: any) {

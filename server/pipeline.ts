@@ -9,7 +9,7 @@ import { colorNameOf, guideImage, pasteAlpha, pasteBack, strokeBox, type Stroke 
 export type Edit = {
   mark: number;
   heard?: string;
-  kind?: 'object' | 'pointer';
+  kind?: 'object' | 'pointer' | 'reference';
   target: string;
   instruction: string;
   // With instant edits on: what kind of change, so simple ones run locally.
