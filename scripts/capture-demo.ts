@@ -36,7 +36,8 @@ const sample = (p: string) => join(root, 'samples', p);
 const SPIKES = [[280, 640], [330, 470], [380, 560], [430, 395], [480, 530], [530, 440], [575, 600]];
 
 const SCENES: Record<string, Scene> = {
-  hook: { image: sample('illust/armor.jpg'), marks: [{ say: '이 어깨갑주, 이렇게 뾰족하게.', shape: 'contour', box: [280, 395, 575, 640] }] },
+  // "어깨 갑옷" rather than the rarer "어깨갑주": the synthetic voice's 갑주 was once heard as "가수".
+  hook: { image: sample('illust/armor.jpg'), marks: [{ say: '이 어깨 갑옷, 이렇게 뾰족하게 바꿔 줘.', shape: 'contour', box: [280, 395, 575, 640] }] },
   macaron: { image: join(root, 'out', 'bench-hard', 'grid', 'original.png'), marks: [{ say: '이거 초콜릿으로.', shape: 'tap', box: [1140, 668, 1305, 885] }] },
   brooch: {
     image: sample('illust/armor.jpg'),
@@ -56,8 +57,10 @@ const SCENES: Record<string, Scene> = {
   three: {
     image: sample('illust/keyvisual.jpg'),
     marks: [
-      { say: '이건 지우고,', object: 'the smartphone in her hand', shape: 'circle' },
-      { say: '이건 빨갛게,', object: 'her navy school blazer', shape: 'circle' },
+      // Naming it: the synthetic voice's "이건 지우고" was often heard as "이것이이고".
+      { say: '이 휴대폰은 지우고,', object: 'the smartphone in her hand', shape: 'circle' },
+      // Her chest, not the whole blazer: its box reaches the backpack beside her.
+      { say: '이건 빨갛게,', box: [1190, 720, 1540, 1080], shape: 'circle' },
       { say: '여기에 작은 별 하나.', box: [170, 100, 290, 220], shape: 'circle' },
     ],
   },
