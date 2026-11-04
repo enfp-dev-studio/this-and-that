@@ -150,6 +150,11 @@ export class Builder {
     this.parts = [];
   }
 
+  // Jump every animation to its end (before rendering the model for a model call).
+  finish() {
+    this.tick(performance.now() + 1e6);
+  }
+
   private tick(now: number) {
     const ease = (k: number) => 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2); // back-out
     for (const b of this.built.values()) {

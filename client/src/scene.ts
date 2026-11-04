@@ -44,6 +44,7 @@ export class Stage {
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.0005;
     shadow.receiveShadow = true;
+    shadow.name = 'shadow';
     this.scene.add(shadow);
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0xd8cdb8, 1.6));

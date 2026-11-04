@@ -152,11 +152,12 @@ $('paint').addEventListener('click', async () => {
   const style = typed.value.trim();
   typed.value = '';
   try {
-    const { image, cam } = renderModel(stage);
+    builder.finish();
+    const { image, mask, cam } = renderModel(stage);
     const res = await fetch('/api/paint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, subject, style }) });
     const r = await res.json();
     if (!res.ok) throw new Error(r.error);
-    await applyPaint(stage, r.image, cam, image);
+    await applyPaint(stage, r.image, cam, mask);
     const strip = $('strip');
     strip.insertAdjacentHTML('afterbegin', `<figure><img src="${r.image}"><figcaption>MUSE IMAGE</figcaption></figure>`);
     status(`Muse Image ${(r.ms / 1000).toFixed(1)} s · 칠한 방향에서 볼 때 가장 좋아요`);
@@ -198,6 +199,7 @@ async function perceive(transcript: string) {
   busy = true;
   const before = builder.parts;
   status('Muse Spark가 여러 방향에서 스케치를 보는 중…', true);
+  builder.finish();
   const views = renderViews(stage, strokes, { withModel: editing });
   showStrip(views, true);
   try {

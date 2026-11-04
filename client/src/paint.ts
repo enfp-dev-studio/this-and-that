@@ -21,12 +21,19 @@ export function renderModel(stage: Stage) {
   const scene = stage.scene;
   const bg = scene.background;
   scene.background = new THREE.Color('#ffffff');
-  const hidden = [stage.sketch, stage.helpers, scene.getObjectByName('grid')!].map((o) => [o, o.visible] as const);
+  const hidden = [stage.sketch, stage.helpers, scene.getObjectByName('grid')!, scene.getObjectByName('shadow')!].map((o) => [o, o.visible] as const);
   for (const [o] of hidden) o.visible = false;
   offscreen.render(scene, cam);
+  const image = offscreen.domElement.toDataURL('image/jpeg', 0.9);
+  // The same view as a flat black mask: where the model really is (white walls
+  // would vanish into the white background of the shaded render).
+  scene.overrideMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  offscreen.render(scene, cam);
+  const mask = offscreen.domElement.toDataURL('image/png');
+  scene.overrideMaterial = null;
   for (const [o, v] of hidden) o.visible = v;
   scene.background = bg;
-  return { image: offscreen.domElement.toDataURL('image/jpeg', 0.9), cam };
+  return { image, mask, cam };
 }
 
 // Bounding box of the non-white pixels, in UV space (v up).
@@ -52,11 +59,12 @@ async function silhouette(url: string) {
   return { u0: x0 / w, u1: (x1 + 1) / w, v0: 1 - (y1 + 1) / h, v1: 1 - y0 / h };
 }
 
-// Project `image` (a repaint of `render`, seen from `cam`) onto every mesh of
-// the model. Muse Image may redraw the object a little smaller or shifted, so
-// the painting's silhouette box is mapped onto the render's.
-export async function applyPaint(stage: Stage, image: string, cam: THREE.Camera, render: string) {
-  const [a, b] = await Promise.all([silhouette(render), silhouette(image)]);
+// Project `image` (a repaint of the render whose silhouette is `mask`, seen
+// from `cam`) onto every mesh of the model. Muse Image may redraw the object a
+// little smaller or shifted, so the painting's silhouette box is mapped onto
+// the render's.
+export async function applyPaint(stage: Stage, image: string, cam: THREE.Camera, mask: string) {
+  const [a, b] = await Promise.all([silhouette(mask), silhouette(image)]);
   const remap = new THREE.Vector4(1, 1, 0, 0);
   if (a && b) {
     const su = (b.u1 - b.u0) / (a.u1 - a.u0), sv = (b.v1 - b.v0) / (a.v1 - a.v0);
