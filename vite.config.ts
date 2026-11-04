@@ -19,5 +19,5 @@ export default defineConfig({
   // The pixels worker (instant edits, paste-back) is an ES module.
   worker: { format: 'es' },
   // The browser does the work; /api/meta goes to the Worker proxy (`wrangler dev`).
-  server: { port: 5191, strictPort: true, proxy: { '/api/meta': { target: 'http://localhost:8801', ws: true, ...(devPasscode ? { headers: { 'x-demo-passcode': devPasscode } } : {}) } } },
+  server: { port: Number(process.env.VITE_PORT ?? 5191), strictPort: true, proxy: { '/api/meta': { target: process.env.META_PROXY ?? 'http://localhost:8801', ws: true, ...(devPasscode ? { headers: { 'x-demo-passcode': devPasscode } } : {}) } } },
 });

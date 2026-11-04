@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>This &amp; That · Surface</title>
+    <link rel="stylesheet" href="/src/surface/style.css" />
+  </head>
+  <body>
+    <div id="stage"></div>
+    <header class="brand">
+      <b>This &amp; That</b> <span>Surface</span>
+      <small>모델 위에 그리면서 말하세요 · 오른쪽 버튼/손가락으로 회전</small>
+    </header>
+    <aside class="tools">
+      <button id="undo" title="되돌리기 (Ctrl+Z)">되돌리기</button>
+      <button id="before" title="누르는 동안 원래 텍스처">전/후</button>
+      <button id="clear" title="그린 선 지우기">선 지우기</button>
+    </aside>
+    <section class="strip" id="strip"></section>
+    <section class="edits" id="edits" hidden></section>
+    <footer class="talk">
+      <div class="caption" id="caption"></div>
+      <div class="row">
+        <input id="typed" placeholder="말 대신 입력해도 돼요 (예: 여기에 초승달 엠블럼을 새겨 줘)" />
+        <button id="talk" class="talk-btn" title="누르고 말하기 (Space)">
+          <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2Z"/></svg>
+        </button>
+        <button id="send" class="send-btn" title="보내기 (Enter)">고치기</button>
+      </div>
+      <div class="status" id="status">불러오는 중…</div>
+    </footer>
+    <script type="module" src="/src/surface/main.ts"></script>
+  </body>
+</html>

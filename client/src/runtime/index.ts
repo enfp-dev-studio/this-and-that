@@ -439,6 +439,8 @@ export const runtime = {
   },
 
   imageUrl: (id: string) => images.get(id)?.url ?? '',
+  // The exact pixels (the url is a JPEG for results): the 3D surface edit compares them.
+  bitmap: (id: string) => images.get(id)?.bitmap ?? null,
 
   // A picture kept in this browser (IndexedDB + OPFS), back under its own id,
   // with its part names if they were found. Null if it is gone.
