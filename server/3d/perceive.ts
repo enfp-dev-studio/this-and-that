@@ -3,6 +3,7 @@
 // primitives with transforms fitted to the strokes they explain.
 
 import { sparkStream } from '../meta.ts';
+import { partHolder } from '../../client/src/runtime/fit-parts.ts';
 
 type Usage = Record<string, unknown> | undefined;
 const imagePart = (dataUrl: string) => ({ type: 'image_url', image_url: { url: dataUrl } });
@@ -154,6 +155,8 @@ export async function perceive(req: { views: View[]; strokes: StrokeInfo[]; tran
   content.push(textPart(`What the user said while drawing: ${req.transcript ? `"${req.transcript}"` : '(nothing; go by the sketch alone)'}`));
   const t0 = Date.now();
   let sent = 0, said = false, firstMs = 0;
+  // Parts held to the sketch as they stream in (on their strokes; no duplicates in an edit).
+  const hold = partHolder<Part>(req.parts, req.strokes, req.transcript);
   const { text, usage, firstMs: fm } = await sparkStream({
     system: SYSTEM,
     content,
@@ -167,10 +170,14 @@ export async function perceive(req: { views: View[]; strokes: StrokeInfo[]; tran
         if (say !== null && /"say"\s*:\s*"(?:[^"\\]|\\.)*"/.test(t)) (said = true), onEvent({ type: 'say', subject: field(t, 'subject'), say });
       }
       const parts = partsSoFar(t);
-      for (; sent < parts.length; sent++) onEvent({ type: 'part', part: parts[sent], firstMs });
+      for (; sent < parts.length; sent++) {
+        const part = hold.next(parts[sent]);
+        if (part) onEvent({ type: 'part', part, firstMs });
+      }
     },
   });
-  const answer = JSON.parse(text) as Answer;
+  const raw = JSON.parse(text) as Answer;
+  const answer = { ...raw, parts: partHolder<Part>(req.parts, req.strokes, req.transcript, (s) => console.log(s)).all(raw.parts) };
   const ms = Date.now() - t0;
   onEvent({ type: 'done', answer, usage, ms, firstMs: fm });
   return { answer, usage, ms, firstMs: fm };

@@ -336,10 +336,14 @@ export class Sketch {
   }
 
   // After a build: the strokes so far fade back and a new round starts.
+  // After a build the strokes stay in view, faded and drawn over the parts,
+  // so which stroke made which part shows.
   settle() {
     for (const s of this.strokes) {
       const m = s.line.material as LineMaterial;
-      m.opacity = 0.22;
+      m.opacity = 0.45;
+      m.depthTest = false;
+      s.line.renderOrder = 3;
     }
     this.round++;
   }
@@ -347,7 +351,13 @@ export class Sketch {
   // Undo a build: its strokes become current (and fully visible) again.
   unsettle() {
     this.round = Math.max(1, this.round - 1);
-    for (const s of this.strokes) if (s.round === this.round) (s.line.material as LineMaterial).opacity = 1;
+    for (const s of this.strokes)
+      if (s.round === this.round) {
+        const m = s.line.material as LineMaterial;
+        m.opacity = 1;
+        m.depthTest = true;
+        s.line.renderOrder = 0;
+      }
   }
 
   undo() {
