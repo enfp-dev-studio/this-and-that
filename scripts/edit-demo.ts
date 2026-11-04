@@ -588,7 +588,8 @@ if (existsSync(join(demo, `${take3d}.timing.json`))) {
     segs.push({ from: at, to: st.release + 0.1 }, { from: st.release + 0.1, to: st.done + 1.1, fast: true, wait: st.done - st.release });
     at = st.done + 1.1;
   }
-  segs.push({ from: at, to: Math.min(t.paint! - 0.6, at + 3.2) });
+  // Without a paint step the take ends on a slow turn around the new parts: keep it.
+  segs.push({ from: at, to: t.paint ? Math.min(t.paint - 0.6, at + 3.2) : Math.min(dur(join(demo, `${take3d}.mp4`)), at + 4.0) });
   await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, note: 'Strokes on a 3D model become parts that follow the drawn curve, in its low-poly style.' });
 }
 // A surface edit on the opened helmet: drawn and said, the result baked into its
@@ -628,7 +629,7 @@ console.log(`\n${final}: ${Math.floor(total / 60)}:${String(Math.round(total % 6
 // 5 kHz) and lightly compressed. Under it a soft pad made here (no music anyone
 // else owns): Cmaj7 and Fmaj7 sine tones crossfading over 16 s, a slow swell,
 // lowpassed with a light echo, ~-30 dB, ducked ~3 dB under the voice, faded in
-// and out. Then the whole mix to -23 LUFS integrated, true peak <= -10 dB
+// and out. Then the whole mix to -23 LUFS integrated, true peak <= -9 dB (loudnorm allows no lower; this mix lands near -11.5)
 // (loudnorm, two passes), so the voice sits close to the music.
 function mixSound(picture: string, out: string) {
   const T = dur(picture);
@@ -644,10 +645,10 @@ function mixSound(picture: string, out: string) {
   ].join(';');
   const inputs = ['-i', picture, '-f', 'lavfi', '-i', `aevalsrc='0.035*(${pad})*(0.8+0.2*sin(2*PI*t/9))':s=48000:d=${T.toFixed(2)}`];
   // Pass 1: measure.
-  const log = spawnSync('ffmpeg', ['-hide_banner', ...inputs, '-filter_complex', `${graph};[mix]loudnorm=I=-23:TP=-10:LRA=11:print_format=json[a]`, '-map', '[a]', '-f', 'null', '-']).stderr.toString();
+  const log = spawnSync('ffmpeg', ['-hide_banner', ...inputs, '-filter_complex', `${graph};[mix]loudnorm=I=-23:TP=-9:LRA=11:print_format=json[a]`, '-map', '[a]', '-f', 'null', '-']).stderr.toString();
   const m = JSON.parse(log.slice(log.lastIndexOf('{'), log.lastIndexOf('}') + 1));
   // Pass 2: the measured values in, a linear gain out.
-  const norm = `loudnorm=I=-23:TP=-10:LRA=11:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true`;
+  const norm = `loudnorm=I=-23:TP=-9:LRA=11:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true`;
   ff([...inputs, '-filter_complex', `${graph};[mix]${norm},aresample=48000[a]`, '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-movflags', '+faststart', out]);
   console.log(`sound: ${m.input_i} LUFS measured → -23 LUFS`);
 }

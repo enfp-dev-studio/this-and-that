@@ -541,20 +541,44 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
     done.push({ say, release, done: Date.now() / 1000, parts });
     log(`${name}: "${st.say}" ${(Date.now() / 1000 - release).toFixed(1)} s → ${parts}`);
   }
-  await sleep(3000);
-  const pb = (await page.locator('button:has-text("Paint")').boundingBox())!;
-  await page.mouse.move(pb.x + pb.width / 2, pb.y + pb.height / 2, { steps: 12 });
-  await sleep(300);
-  const paintAt = Date.now() / 1000;
-  await page.mouse.down();
-  await sleep(80);
-  await page.mouse.up();
-  await page.waitForSelector('text=Muse Image is painting', { timeout: 10_000 }).catch(() => {});
-  const painted = await page.waitForSelector('text=Muse Image is painting', { state: 'detached', timeout: 120_000 }).then(() => true, () => false);
-  const paintedAt = Date.now() / 1000;
-  log(`${name}: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
-  await page.evaluate(() => Object.assign((window as any).stage.controls, { autoRotate: true, autoRotateSpeed: 1.6 }));
-  await sleep(5500);
+  await sleep(1500);
+  let paintAt = 0, paintedAt = 0;
+  if (which === 'lowsword') {
+    // A slow 140° turn: the added parts from several sides (no paint: it would repaint the model).
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) => {
+          const { THREE, stage } = window as any;
+          stage.controls.autoRotate = false;
+          const t = stage.controls.target.clone(), p0 = stage.camera.position.clone().sub(t), start = performance.now();
+          const step = () => {
+            const k = Math.min(1, (performance.now() - start) / 7500), e = k * k * (3 - 2 * k);
+            stage.camera.position.copy(t).add(p0.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(140) * e));
+            stage.camera.lookAt(t);
+            stage.controls.update();
+            if (k < 1) setTimeout(step, 16);
+            else done();
+          };
+          step();
+        }),
+    );
+    await sleep(600);
+  } else {
+    await sleep(1500);
+    const pb = (await page.locator('button:has-text("Paint")').boundingBox())!;
+    await page.mouse.move(pb.x + pb.width / 2, pb.y + pb.height / 2, { steps: 12 });
+    await sleep(300);
+    paintAt = Date.now() / 1000;
+    await page.mouse.down();
+    await sleep(80);
+    await page.mouse.up();
+    await page.waitForSelector('text=Muse Image is painting', { timeout: 10_000 }).catch(() => {});
+    const painted = await page.waitForSelector('text=Muse Image is painting', { state: 'detached', timeout: 120_000 }).then(() => true, () => false);
+    paintedAt = Date.now() / 1000;
+    log(`${name}: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
+    await page.evaluate(() => Object.assign((window as any).stage.controls, { autoRotate: true, autoRotateSpeed: 1.6 }));
+    await sleep(5500);
+  }
   const zero = await rec.stop(name);
   const speech: Spoken[] = [];
   for (const [i, st] of steps.entries()) {
@@ -564,8 +588,8 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
   }
   execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...speech.flatMap((_, i) => ['-i', join(clipDir, `${name}-${i}.aiff`)]), '-filter_complex', `${speech.map((p, i) => `[${i}:a]adelay=${Math.round(p.at * 1000)}|${Math.round(p.at * 1000)}[a${i}]`).join(';')};${speech.map((_, i) => `[a${i}]`).join('')}amix=inputs=${speech.length}:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, `${name}.wav`)]);
   const rel = (t: number) => t - zero;
-  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: rel(done[0].release), result: rel(done[0].done), steps: done.map((x) => ({ say: rel(x.say), release: rel(x.release), done: rel(x.done), parts: x.parts })), paint: rel(paintAt), painted: rel(paintedAt), speech }, null, 1));
-  return painted ? 'result' : 'failed';
+  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: rel(done[0].release), result: rel(done[0].done), steps: done.map((x) => ({ say: rel(x.say), release: rel(x.release), done: rel(x.done), parts: x.parts })), ...(paintAt ? { paint: rel(paintAt), painted: rel(paintedAt) } : {}), speech }, null, 1));
+  return 'result';
 }
 
 // A surface edit on the opened helmet: a crescent drawn on its crown plate and
