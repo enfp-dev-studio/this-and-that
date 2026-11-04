@@ -203,6 +203,12 @@ async function perceive(transcript: string) {
   builder.finish();
   const views = renderViews(stage, strokes, { withModel: editing });
   showStrip(views, true);
+  // The strokes Spark is looking at pulse until the answer is in.
+  const pulse = (now: number) => {
+    if (!busy || builder.parts !== before) return;
+    for (const s of strokes) (s.line.material as any).opacity = 0.55 + 0.45 * Math.cos(now / 180);
+  };
+  stage.onTick(pulse);
   try {
     const res = await fetch('/api/perceive', {
       method: 'POST',
@@ -249,6 +255,8 @@ async function perceive(transcript: string) {
     status(`실패: ${String(e).slice(0, 160)}`);
   } finally {
     busy = false;
+    stage.offTick(pulse);
+    if (builder.parts === before) for (const s of strokes) (s.line.material as any).opacity = 1; // failed: strokes stay current
     $('strip').classList.remove('thinking');
   }
 }

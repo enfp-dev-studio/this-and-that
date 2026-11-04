@@ -66,6 +66,10 @@ export class Stage {
     this.tickers.push(f);
   }
 
+  offTick(f: (now: number) => void) {
+    this.tickers = this.tickers.filter((x) => x !== f);
+  }
+
   resize() {
     const w = innerWidth, h = innerHeight;
     this.renderer.setSize(w, h);
