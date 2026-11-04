@@ -4,6 +4,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
+// A colour from theme.css (any CSS colour) for three.js.
+function themeColor(name: string, fallback: string) {
+  const g = document.createElement('canvas').getContext('2d')!;
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  g.fillRect(0, 0, 1, 1);
+  const [r, gr, b] = g.getImageData(0, 0, 1, 1).data;
+  return new THREE.Color().setStyle(`rgb(${r},${gr},${b})`);
+}
+
 export class Stage {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -16,13 +25,13 @@ export class Stage {
   private tween: { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; t0: number; ms: number } | null = null;
   private tickers: ((now: number) => void)[] = [];
 
-  constructor(host: HTMLElement) {
+  constructor(private host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     host.appendChild(this.renderer.domElement);
-    this.scene.background = new THREE.Color('#f3efe6');
+    this.scene.background = themeColor('--viewport', '#f3efe6');
 
     this.camera.position.set(0, 0.75, 3.4);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -57,7 +66,7 @@ export class Stage {
     this.scene.add(sun);
 
     this.scene.add(this.model, this.sketch, this.helpers);
-    addEventListener('resize', () => this.resize());
+    new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
     this.renderer.setAnimationLoop((now) => this.frame(now));
   }
@@ -70,8 +79,18 @@ export class Stage {
     this.tickers = this.tickers.filter((x) => x !== f);
   }
 
+  // Moved into a new host (the 3D mode remounted): keep the same renderer and scene.
+  mount(host: HTMLElement) {
+    if (host === this.host) return;
+    this.host = host;
+    host.appendChild(this.renderer.domElement);
+    new ResizeObserver(() => this.resize()).observe(host);
+    this.resize();
+  }
+
+  // The host's size: the app's 3D area, below the top bar.
   resize() {
-    const w = innerWidth, h = innerHeight;
+    const w = Math.max(1, this.host.clientWidth), h = Math.max(1, this.host.clientHeight);
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();

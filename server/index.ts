@@ -21,6 +21,7 @@ import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, maxVolumeDb, colorOf, composeWithRefs, cropAround, outlineImage, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
+import { handle3d } from './3d/routes.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const root = join(import.meta.dirname, '..');
@@ -387,6 +388,11 @@ createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean);
   try {
+    // 3D sketch mode (beta).
+    if (parts[0] === 'api' && parts[1] === '3d') {
+      if (!(await handle3d(req, res, parts))) send(res, 404, { error: 'no such 3d route' });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/images') {
       const buf = decodeDataUrl((await readJson(req)).image);
       if (!buf) return send(res, 400, { error: 'need an image' });

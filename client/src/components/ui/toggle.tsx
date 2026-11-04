@@ -11,6 +11,9 @@ const toggleVariants = cva(
         default: "bg-transparent",
         outline:
           "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground",
+        // This & That: a segmented choice (mode, pen, drawing plane); the chosen one stands out.
+        segment:
+          "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground",
       },
       size: {
         default: "h-9 min-w-9 px-2",

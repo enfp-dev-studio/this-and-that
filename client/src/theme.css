@@ -7,6 +7,8 @@
  *                            server tells the models the marks by colour name
  *   --mark-halo, --mark-text the outline around a mark and its number
  *   --sheen                  the light that sweeps regions still being edited
+ *   --viewport               3D sketch mode's scene: a light paper in both
+ *                            themes, since the pencil strokes are dark ink
  *   layout: --panel-width, --toolbar-offset, --stage-padding,
  *           --toolbar-clearance, --status-width, --slider-width, --card-width, --ref-width, --type-width, --thumb-width,
  *           --caption-offset, --caption-width, --callout-width, --ref-thumb-width,
@@ -15,6 +17,7 @@
 
 :root {
   --radius: 0.75rem;
+  --viewport: #f3efe6;
   --panel-width: 20rem;
   --toolbar-offset: 1.5rem;
   --stage-padding: 2rem;

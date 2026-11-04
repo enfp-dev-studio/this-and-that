@@ -1,16 +1,26 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { editor } from '@/editor/engine';
-import { TopBar } from '@/components/top-bar';
+import { TopBar, type AppMode } from '@/components/top-bar';
+
+// three.js loads only when 3D mode opens, so the image mode starts as light as before.
+const ThreeMode = lazy(() => import('@/components/three-mode').then((m) => ({ default: m.ThreeMode })));
 import { Stage } from '@/components/stage';
 import { RefPanel } from '@/components/ref-panel';
 import { useEditor } from '@/hooks/use-editor';
 
 // One gesture: point and talk. The canvas and the talk button are always
 // there; everything else appears when it matters or lives in the details sheet.
+// Two modes: refine an image (the core), or sketch in 3D (beta; #3d in the URL).
 export function App() {
   const s = useEditor();
+  const [mode, setMode] = useState<AppMode>(location.hash === '#3d' ? '3d' : 'image');
+  const switchMode = (m: AppMode) => {
+    setMode(m);
+    history.replaceState(null, '', m === '3d' ? '#3d' : location.pathname + location.search);
+  };
   useEffect(() => {
+    if (mode !== 'image') return;
     editor.onError = (message) => toast.error('Something went wrong', { description: message });
     editor.onNotice = (message) => toast(message);
     // Paste: the picture when none is open, otherwise a reference.
@@ -22,14 +32,22 @@ export function App() {
     };
     document.addEventListener('paste', paste);
     return () => document.removeEventListener('paste', paste);
-  }, []);
+  }, [mode]);
 
   return (
     <div className="flex h-dvh flex-col">
-      <TopBar />
+      <TopBar mode={mode} onMode={switchMode} />
       <div className="flex min-h-0 flex-1">
-        {s.activeRef && <RefPanel key={s.activeRef} />}
-        <Stage />
+        {mode === '3d' ? (
+          <Suspense>
+            <ThreeMode />
+          </Suspense>
+        ) : (
+          <>
+            {s.activeRef && <RefPanel key={s.activeRef} />}
+            <Stage />
+          </>
+        )}
       </div>
     </div>
   );

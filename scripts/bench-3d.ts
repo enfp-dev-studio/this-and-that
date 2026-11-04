@@ -1,8 +1,8 @@
 // Replays a saved perception request with a given reasoning effort:
-//   node --env-file=.env server/bench.ts <job dir> [effort]
+//   node --env-file=.env scripts/bench-3d.ts out/3d/jobs/<job dir> [effort]
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { perceive } from './perceive.ts';
+import { perceive } from '../server/3d/perceive.ts';
 
 const dir = process.argv[2];
 const effort = process.argv[3] ?? 'minimal';

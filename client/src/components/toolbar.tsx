@@ -109,11 +109,11 @@ function PenModes({ value }: { value: PenMode }) {
     { value: 'shape', label: 'Shape', icon: PenTool, tip: 'Shape: marks draw the new outline to follow' },
   ] as const;
   return (
-    <ToggleGroup type="single" variant="outline" size="touch" value={value === 'auto' ? '' : value} onValueChange={(v) => editor.setPenMode((v || 'auto') as PenMode)} aria-label="Pen mode (none pressed: auto)">
+    <ToggleGroup type="single" variant="segment" size="touch" value={value === 'auto' ? '' : value} onValueChange={(v) => editor.setPenMode((v || 'auto') as PenMode)} aria-label="Pen mode (none pressed: auto)">
       {modes.map((m) => (
         <Tooltip key={m.value}>
           <TooltipTrigger asChild>
-            <ToggleGroupItem value={m.value} aria-label={m.label} className="aria-checked:bg-primary aria-checked:text-primary-foreground">
+            <ToggleGroupItem value={m.value} aria-label={m.label}>
               <m.icon />
               {m.label}
             </ToggleGroupItem>

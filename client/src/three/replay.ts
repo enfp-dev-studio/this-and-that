@@ -16,6 +16,21 @@ export function screenOf(stage: Stage, x: number, y: number, z: number) {
 // `holdMs`: keep the pen still on the screen before lifting (QuickShape).
 export async function penStroke(stage: Stage, pts: [number, number][], ms = 500, id = 7, opts: { holdMs?: number; wobble?: number } = {}) {
   const el = stage.renderer.domElement;
+  // Synthetic pointers have no active pointer to capture (the orbit controls try).
+  if (!(el as any).__replayCapture) {
+    const [capture, release] = [el.setPointerCapture.bind(el), el.releasePointerCapture.bind(el)];
+    el.setPointerCapture = (pointerId: number) => {
+      try {
+        capture(pointerId);
+      } catch {}
+    };
+    el.releasePointerCapture = (pointerId: number) => {
+      try {
+        release(pointerId);
+      } catch {}
+    };
+    (el as any).__replayCapture = true;
+  }
   // Resample the polyline and add a little hand wobble.
   const path: [number, number][] = [];
   for (let i = 0; i < pts.length - 1; i++) {

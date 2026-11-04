@@ -22,7 +22,7 @@ export class Voice {
     this.all = [];
     this.pending = [];
     this.pendingLength = 0;
-    this.id = fetch('/api/asr', { method: 'POST' }).then((r) => r.json()).then((j) => j.asrId as string, () => null);
+    this.id = fetch('/api/3d/asr', { method: 'POST' }).then((r) => r.json()).then((j) => j.asrId as string, () => null);
     this.stream ??= await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
     this.ctx ??= new AudioContext();
     await this.ctx.resume();
@@ -56,7 +56,7 @@ export class Voice {
     this.queue = this.queue.then(async () => {
       const id = await this.id;
       if (!id) return;
-      const r = await fetch(`/api/asr/${id}`, { method: 'POST', body: pcm.buffer as ArrayBuffer });
+      const r = await fetch(`/api/3d/asr/${id}`, { method: 'POST', body: pcm.buffer as ArrayBuffer });
       if (r.ok && this.recording) this.onText((await r.json()).text);
     }).catch(() => {});
   }
@@ -70,7 +70,7 @@ export class Voice {
     this.flush();
     await Promise.race([this.queue, new Promise((r) => setTimeout(r, 3000))]);
     const id = (await this.id) ?? 'none';
-    const r = await fetch(`/api/asr/${id}/finish`, { method: 'POST', body: wav(concat(this.all)) });
+    const r = await fetch(`/api/3d/asr/${id}/finish`, { method: 'POST', body: wav(concat(this.all)) });
     return r.json();
   }
 }

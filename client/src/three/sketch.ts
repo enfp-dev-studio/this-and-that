@@ -137,9 +137,11 @@ export class Sketch {
     return new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   }
 
+  // Client px, like the pointer events (the canvas sits below the app's top bar).
   private toScreen(p: THREE.Vector3) {
     const v = p.clone().project(this.stage.camera);
-    return new THREE.Vector2((v.x + 1) * 0.5 * innerWidth, (1 - v.y) * 0.5 * innerHeight);
+    const r = this.stage.renderer.domElement.getBoundingClientRect();
+    return new THREE.Vector2(r.left + (v.x + 1) * 0.5 * r.width, r.top + (1 - v.y) * 0.5 * r.height);
   }
 
   private modelMeshes() {

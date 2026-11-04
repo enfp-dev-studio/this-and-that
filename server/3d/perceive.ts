@@ -2,7 +2,11 @@
 // transcript and the strokes' 3D coordinates, and answers a part list:
 // primitives with transforms fitted to the strokes they explain.
 
-import { imagePart, sparkStream, textPart, type Usage } from './meta.ts';
+import { sparkStream } from '../meta.ts';
+
+type Usage = Record<string, unknown> | undefined;
+const imagePart = (dataUrl: string) => ({ type: 'image_url', image_url: { url: dataUrl } });
+const textPart = (text: string) => ({ type: 'text', text });
 
 export type View = { name: string; note: string; image: string }; // image: JPEG data URL
 export type StrokeInfo = {
