@@ -1,31 +1,33 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { ImageIcon } from 'lucide-react';
 import { editor } from '@/editor/engine';
+import { SAMPLES } from '@/editor/presets';
 import { useEditor } from '@/hooks/use-editor';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Toolbar } from '@/components/toolbar';
-import { SAMPLES } from '@/editor/presets';
+import { Callouts, Caption, StatusChip } from '@/components/canvas-feedback';
+import { RefThumbs } from '@/components/ref-thumbs';
 
-// The image on a quiet dotted backdrop. The canvas draws the image, marks,
-// SAM outlines and sheen; the before/after overlay sits exactly over it.
+// The picture on a quiet dotted backdrop, and everything about it on top:
+// the canvas draws the picture, marks, SAM outlines and sheen; a finished
+// edit shows over it (hold it to see before); instructions sit beside their
+// marks; the caption runs under it while you talk.
 export function Stage() {
   const s = useEditor();
   const stage = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const [split, setSplit] = useState(0.5);
-
   useEffect(() => editor.attach(stage.current!, canvas.current!), []);
-  useEffect(() => {
-    if (s.compare) setSplit(0.5);
-  }, [s.compare]);
 
-  const pair = s.compare ? editor.comparePair() : null;
-  const dragSplit = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.type === 'pointerdown') e.currentTarget.setPointerCapture(e.pointerId);
-    else if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-    const box = e.currentTarget.getBoundingClientRect();
-    setSplit(Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)));
+  const pair = editor.comparePair();
+  const shown = s.mode === 'review' && pair ? (s.peek ? pair.before : pair.after) : s.peek && pair ? pair.before : null;
+  const box = { left: s.fit.x, top: s.fit.y, width: s.fit.w, height: s.fit.h };
+  const hold = {
+    onPointerDown: (e: React.PointerEvent) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      editor.setPeek(true);
+    },
+    onPointerUp: () => editor.setPeek(false),
+    onPointerCancel: () => editor.setPeek(false),
   };
 
   return (
@@ -36,31 +38,23 @@ export function Stage() {
       onDrop={(e) => {
         e.preventDefault();
         const f = e.dataTransfer.files[0];
-        if (f?.type.startsWith('image/')) editor.openFile(f);
+        if (!f?.type.startsWith('image/')) return;
+        // On an open picture, a dropped image is a reference; otherwise it is the picture.
+        if (s.mode === 'empty') editor.openFile(f);
+        else editor.addRef(f);
       }}
     >
       <canvas ref={canvas} className="absolute inset-0 size-full touch-none" />
 
-      {s.mode !== 'empty' && (
-        <div className="pointer-events-none absolute rounded-sm shadow-2xl ring-1 ring-border" style={{ left: s.fit.x, top: s.fit.y, width: s.fit.w, height: s.fit.h }} />
-      )}
+      {s.mode !== 'empty' && <div className="pointer-events-none absolute rounded-sm shadow-2xl ring-1 ring-border" style={box} />}
 
-      {pair && (
-        <div
-          className="absolute cursor-ew-resize overflow-hidden rounded-sm"
-          style={{ left: s.fit.x, top: s.fit.y, width: s.fit.w, height: s.fit.h }}
-          onPointerDown={dragSplit}
-          onPointerMove={dragSplit}
-        >
-          <img src={pair.after} alt="After" className="absolute inset-0 size-full" draggable={false} />
-          <img src={pair.before} alt="Before" className="absolute inset-0 size-full" style={{ clipPath: `inset(0 ${(1 - split) * 100}% 0 0)` }} draggable={false} />
-          <div className="absolute inset-y-0 -translate-x-1/2 border-l-2 border-primary shadow-lg" style={{ left: `${split * 100}%` }} />
-          <Badge variant="secondary" className="absolute top-4 left-4">Before</Badge>
-          <Badge variant="secondary" className="absolute top-4 right-4">After</Badge>
+      {shown && (
+        <div className="absolute overflow-hidden rounded-sm" style={box} {...(s.mode === 'review' ? hold : {})}>
+          <img src={shown} alt={s.peek ? 'Before' : 'After'} className="absolute inset-0 size-full" draggable={false} />
         </div>
       )}
 
-      {s.mode === 'empty' && (
+      {s.mode === 'empty' ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-4">
           <p className="text-sm text-muted-foreground">Draw on it. Say what you want.</p>
           <Button size="touch" onClick={() => editor.open(SAMPLES[0].url)}>
@@ -68,9 +62,15 @@ export function Stage() {
             Try a sample
           </Button>
         </div>
+      ) : (
+        <>
+          <Callouts />
+          <StatusChip />
+          <Caption />
+          <RefThumbs />
+          <Toolbar hold={hold} />
+        </>
       )}
-
-      {s.mode !== 'empty' && <Toolbar split={split} onSplit={setSplit} />}
     </div>
   );
 }

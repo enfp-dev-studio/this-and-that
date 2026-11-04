@@ -9,6 +9,7 @@
  *   --sheen                  the light that sweeps regions still being edited
  *   layout: --panel-width, --toolbar-offset, --stage-padding,
  *           --toolbar-clearance, --status-width, --slider-width, --card-width, --ref-width, --type-width, --thumb-width,
+ *           --caption-offset, --caption-width, --callout-width,
  *           --canvas-dot-gap
  */
 
@@ -24,6 +25,9 @@
   --ref-width: 26rem;
   --type-width: 26rem;
   --thumb-width: 3rem;
+  --caption-offset: 7rem;
+  --caption-width: 40rem;
+  --callout-width: 18rem;
   --canvas-dot-gap: 1.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

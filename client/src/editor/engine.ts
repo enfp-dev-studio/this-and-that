@@ -45,7 +45,9 @@ export type Snapshot = {
   index: number; // current version
   result: Version | null; // the edit waiting for Keep or Discard
   compare: boolean; // before/after overlay
+  peek: boolean; // held: show the picture before this edit
   fit: Fit; // where the picture sits in its stage, CSS px
+  anchors: { mark: number; x: number; y: number }[]; // beside each mark's number on the picture, CSS px
   refs: Ref[];
   activeRef: string | null; // the reference open beside the picture
   experiment: boolean; // time each task done one of four ways
@@ -110,7 +112,9 @@ class Editor {
     index: -1,
     result: null,
     compare: false,
+    peek: false,
     fit: { x: 0, y: 0, w: 0, h: 0 },
+    anchors: [],
     refs: [],
     activeRef: null,
     experiment: false,
@@ -226,6 +230,7 @@ class Editor {
 
     const strokes = this.strokesOn(surface);
     const working = this.snapshot.mode === 'processing';
+    if (surface.key === 'target') this.updateAnchors(strokes, image, r);
     // SAM outlines (the picture only): a tint in the mark's colour, plus a sheen while the edit runs.
     const masks = strokes.filter((s) => s.mask && !s.settled);
     if (masks.length) {
@@ -244,6 +249,20 @@ class Editor {
       this.drawPart(ctx, image, this.hover, r.k);
     }
     ctx.restore();
+  }
+
+  // Where the callout for each mark goes: just right of its numbered badge
+  // (same placement as drawStroke), in the stage's CSS px.
+  private updateAnchors(strokes: Stroke[], image: HTMLImageElement, r: Fit & { k: number }) {
+    const unit = Math.max(image.naturalWidth, image.naturalHeight) / 160;
+    const rad = unit * 2.6;
+    const anchors = strokes.map((s) => {
+      const p0 = s.points[0];
+      const bx = Math.min(Math.max(p0.x, rad), image.naturalWidth - rad);
+      const by = Math.min(Math.max(p0.y - rad * 1.3, rad), image.naturalHeight - rad);
+      return { mark: s.mark, x: Math.round(r.x + (bx + rad) * r.k + 6), y: Math.round(r.y + by * r.k) };
+    });
+    if (JSON.stringify(anchors) !== JSON.stringify(this.snapshot.anchors)) queueMicrotask(() => this.set({ anchors }));
   }
 
   // The server's mask in this theme's colour for the mark.
@@ -556,6 +575,12 @@ class Editor {
 
   setCompare(on: boolean) {
     this.set({ compare: on });
+  }
+
+  // Press and hold to see the picture before this edit.
+  setPeek(on: boolean) {
+    if (on && !this.comparePair()) return;
+    if (on !== this.snapshot.peek) this.set({ peek: on });
   }
 
   // What the before/after overlay shows: the pending result against the

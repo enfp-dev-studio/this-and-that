@@ -1,37 +1,26 @@
 import { useState } from 'react';
-import { Check, Eraser, Loader2, Mic, PenLine, Send, X } from 'lucide-react';
+import { Check, Eraser, Eye, Loader2, Mic, PenLine, Send, X } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { MarkBadge } from '@/components/mark-badge';
 
-// Floating toolbar: mark tools, the big hold-to-talk button, and either the
-// status or (when comparing) the before/after slider, with Keep for a result.
-export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number) => void }) {
+type Hold = { onPointerDown: (e: React.PointerEvent) => void; onPointerUp: () => void; onPointerCancel: () => void };
+
+// The always-there controls: the pen tool and the hold-to-talk button. Clear,
+// Before, Keep and Discard appear only when they apply.
+export function Toolbar({ hold }: { hold: Hold }) {
   const s = useEditor();
   const recording = s.mode === 'recording';
   const working = s.mode === 'processing';
   const review = s.mode === 'review';
-
   const typing = s.experiment && s.method === 'type';
-  const status = recording
-    ? s.marks
-      ? 'Release or tap to send'
-      : 'Listening… now draw'
-    : working
-      ? `Working… ${Math.round(s.elapsedMs / 1000)} s`
-      : typing
-        ? 'Type, then Enter to send'
-        : s.experiment && s.method === 'voice'
-          ? 'Hold or tap, then talk (no marks)'
-          : 'Hold or tap, then draw and talk';
-  const slider = <Slider className="w-(--slider-width)" value={[split * 100]} onValueChange={([v]) => onSplit(v / 100)} aria-label="Before and after" />;
+  const canPeek = review || (s.mode === 'idle' && s.index > 0);
+  const canClear = s.marks > 0 && !working && !review;
 
   return (
     <div className="absolute bottom-(--toolbar-offset) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
@@ -44,18 +33,17 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
           </TooltipTrigger>
           <TooltipContent>Pen only: fingers don’t draw (on once a stylus is used)</TooltipContent>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-touch" className="rounded-full" onClick={() => editor.clearMarks()} disabled={working || review || !s.marks} aria-label="Clear marks">
-              <Eraser />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Clear marks</TooltipContent>
-        </Tooltip>
-        <MarkBadge mark={s.marks + 1} className={cn((working || review) && 'opacity-40')} />
+        {canClear && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-touch" className="rounded-full" onClick={() => editor.clearMarks()} aria-label="Clear marks">
+                <Eraser />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Clear marks</TooltipContent>
+          </Tooltip>
+        )}
       </div>
-
-      <Separator orientation="vertical" />
 
       {typing ? (
         <TypeBox busy={working} />
@@ -82,24 +70,30 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
         </Tooltip>
       )}
 
-      <Separator orientation="vertical" />
-
-      {review ? (
-        <div className="flex items-center gap-2">
-          {slider}
-          <Button size="touch" className="rounded-full" onClick={() => editor.keep()}>
-            <Check />
-            Keep
-          </Button>
-          <Button variant="outline" size="touch" className="rounded-full" onClick={() => editor.discard()}>
-            <X />
-            Discard
-          </Button>
-        </div>
-      ) : s.compare ? (
-        slider
-      ) : (
-        <span className="w-(--status-width) text-sm text-muted-foreground tabular-nums">{status}</span>
+      {(canPeek || review) && (
+        <>
+          <Separator orientation="vertical" />
+          <div className="flex items-center gap-2">
+            {canPeek && (
+              <Button variant="outline" size="touch" className="rounded-full" {...hold} onContextMenu={(e) => e.preventDefault()} aria-label="Hold to see before">
+                <Eye />
+                Before
+              </Button>
+            )}
+            {review && (
+              <>
+                <Button size="touch" className="rounded-full" onClick={() => editor.keep()}>
+                  <Check />
+                  Keep
+                </Button>
+                <Button variant="outline" size="touch" className="rounded-full" onClick={() => editor.discard()}>
+                  <X />
+                  Discard
+                </Button>
+              </>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
