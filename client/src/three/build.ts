@@ -23,6 +23,9 @@ export type Part = {
   outline?: number[][]; // membrane: [x, y] outline from its root (the center); lathe: [radius, y] half profile from its base
   roughness?: number; // set when the part takes its look from an opened model (else from `material`)
   metalness?: number;
+  style?: 'flame' | 'guard'; // a crafted low-poly form for a drawn flame or guard (fit-parts.ts)
+  tongues?: number[][]; // flame: [y0, y1, tipX, tipY] per tongue, in the part's frame (x out of the edge, y along it)
+  thickness?: number; // flame: tongue thickness; guard: section height
 };
 
 const FINISH: Record<string, { roughness: number; metalness: number }> = {
@@ -64,6 +67,7 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
       return g;
     }
     case 'tube': {
+      if (p.style === 'guard' && (p.path?.length ?? 0) >= 2) return guardGeometry(p.path!, pos(p.thickness ?? sy / 2));
       const path = (p.path ?? []).filter((q) => q.length === 3);
       if (path.length >= 2) return taperedTube(path, pos(p.radii?.[0] ?? sx / 2), pos(p.radii?.[1] ?? 0.004));
       return new THREE.ConeGeometry(sx / 2, sy, 10, 1);
@@ -75,6 +79,7 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
       return new THREE.SphereGeometry(0.5, 12, 8).scale(sx, sy, sz);
     }
     case 'membrane': {
+      if (p.style === 'flame' && p.tongues?.length) return flameGeometry(p.tongues, pos(p.thickness ?? 0.008));
       const outline = (p.outline ?? []).filter((q) => q.length === 2);
       if (outline.length >= 3) return membrane(outline, sz);
       return new THREE.BoxGeometry(sx, sy, sz);
@@ -108,6 +113,90 @@ function taperedTube(path: number[][], base: number, tip: number) {
   }
   g.computeVertexNormals();
   return g;
+}
+
+// Flames: one tongue per [y0, y1, tipX, tipY] (x out of the edge, y along it).
+// Each is a diamond section swept from a root sunk into the edge to a point,
+// curving and twisting out of the plane as it goes, deep orange at the root
+// to yellow at the tip (vertex colors; flat shaded).
+function flameGeometry(tongues: number[][], thickness: number) {
+  const pos: number[] = [], col: number[] = [];
+  const root = new THREE.Color('#c93a12'), tip = new THREE.Color('#ffd23a');
+  const S = [0, 0.3, 0.58, 0.82, 1];
+  tongues.forEach(([y0, y1, tx, ty], k) => {
+    const side = k % 2 ? 1 : -1;
+    const bm = new THREE.Vector3(-0.012, (y0 + y1) / 2, 0), tp = new THREE.Vector3(tx, ty, 0);
+    const d = tp.clone().sub(bm), len = d.length();
+    const across = new THREE.Vector3(-d.y, d.x, 0).normalize();
+    const ring = S.map((s) => {
+      const c = bm.clone().addScaledVector(d, s).addScaledVector(across, side * 0.08 * len * Math.sin(Math.PI * s)).add(new THREE.Vector3(0, 0, side * 0.16 * len * s * s));
+      // Wide at the root (neighbours overlap into one mass), narrowing to a point.
+      const hw = ((y1 - y0) / 2) * 1.05 * Math.pow(1 - s, 0.75), ht = (thickness / 2) * (1 - 0.7 * s), th = side * 0.45 * s;
+      const a = across.clone().multiplyScalar(Math.cos(th)).add(new THREE.Vector3(0, 0, Math.sin(th)));
+      const n = new THREE.Vector3(0, 0, Math.cos(th)).addScaledVector(across, -Math.sin(th));
+      return { s, pts: [c.clone().addScaledVector(a, hw), c.clone().addScaledVector(n, ht), c.clone().addScaledVector(a, -hw), c.clone().addScaledVector(n, -ht)] };
+    });
+    const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, sa: number, sb: number, sc: number) => {
+      for (const [v, s] of [[a, sa], [b, sb], [c, sc]] as const) {
+        pos.push(v.x, v.y, v.z);
+        const cc = root.clone().lerp(tip, Math.pow(s, 0.8));
+        col.push(cc.r, cc.g, cc.b);
+      }
+    };
+    for (let i = 0; i < S.length - 1; i++) {
+      const [A, B] = [ring[i], ring[i + 1]];
+      for (let j = 0; j < 4; j++) {
+        const j2 = (j + 1) % 4;
+        tri(A.pts[j], B.pts[j], B.pts[j2], A.s, B.s, B.s);
+        tri(A.pts[j], B.pts[j2], A.pts[j2], A.s, B.s, A.s);
+      }
+    }
+    const b0 = ring[0].pts;
+    tri(b0[0], b0[2], b0[1], 0, 0, 0);
+    tri(b0[0], b0[3], b0[2], 0, 0, 0);
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// A guard: a flattened hexagon (deeper than tall) swept along the path, its
+// side bevels a shade darker, with a faceted knob at each end.
+function guardGeometry(path: number[][], half: number) {
+  const curve = new THREE.CatmullRomCurve3(path.map((q) => new THREE.Vector3(...q)), false, 'centripetal');
+  const n = 18, depth = half * 1.6;
+  const hex = [[depth, 0, 0.78], [depth / 2, half, 1], [-depth / 2, half, 1], [-depth, 0, 0.78], [-depth / 2, -half, 1], [depth / 2, -half, 1]];
+  const rings = Array.from({ length: n + 1 }, (_, i) => {
+    const c = curve.getPointAt(i / n), t = curve.getTangentAt(i / n);
+    const z = new THREE.Vector3(0, 0, 1);
+    const up = new THREE.Vector3().crossVectors(z, t).normalize();
+    const deep = new THREE.Vector3().crossVectors(t, up).normalize();
+    return hex.map(([a, b, shade]) => ({ v: c.clone().addScaledVector(deep, a).addScaledVector(up, b), shade }));
+  });
+  const pos: number[] = [], col: number[] = [];
+  const put = (p: { v: THREE.Vector3; shade: number }, shade = p.shade) => (pos.push(p.v.x, p.v.y, p.v.z), col.push(shade, shade, shade));
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < 6; j++) {
+      const j2 = (j + 1) % 6, sh = Math.min(rings[i][j].shade, rings[i][j2].shade);
+      put(rings[i][j], sh), put(rings[i + 1][j], sh), put(rings[i + 1][j2], sh);
+      put(rings[i][j], sh), put(rings[i + 1][j2], sh), put(rings[i][j2], sh);
+    }
+  const body = new THREE.BufferGeometry();
+  body.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  body.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const knob = (at: THREE.Vector3) => {
+    const k = new THREE.IcosahedronGeometry(half * 1.7, 0).toNonIndexed();
+    k.translate(at.x, at.y, at.z);
+    k.setAttribute('color', new THREE.Float32BufferAttribute(new Array(k.getAttribute('position').count * 3).fill(0.88), 3));
+    k.deleteAttribute('uv');
+    return k;
+  };
+  const merged = mergeGeometries([body, knob(curve.getPointAt(0)), knob(curve.getPointAt(1))]) ?? body;
+  merged.deleteAttribute('normal');
+  merged.computeVertexNormals();
+  return merged;
 }
 
 // A wing or fin: the outline as a thin sheet, cupped a little along its span,
@@ -185,8 +274,10 @@ export class Builder {
         return;
       }
       const f = { ...(FINISH[part.material] ?? FINISH.paint), ...(part.roughness !== undefined ? { roughness: part.roughness } : {}), ...(part.metalness !== undefined ? { metalness: part.metalness } : {}) };
-      const mat = new THREE.MeshStandardMaterial({ color: part.color, flatShading: true, transparent: true, opacity: 0, ...f });
-      const mesh = new THREE.Mesh(geometryOf(part, byId), mat);
+      const geometry = geometryOf(part, byId);
+      const shaded = !!geometry.getAttribute('color'); // flames and guards carry their own shading
+      const mat = new THREE.MeshStandardMaterial({ color: part.style === 'flame' ? '#ffffff' : part.color, vertexColors: shaded, flatShading: true, transparent: true, opacity: 0, ...f, ...(part.style === 'flame' ? { emissive: new THREE.Color('#ff7a1a'), emissiveIntensity: 0.18, metalness: 0, roughness: 0.55 } : {}) });
+      const mesh = new THREE.Mesh(geometry, mat);
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.position.fromArray(part.center);
       if (part.primitive !== 'extrude') mesh.rotation.set(...(part.rotation.map(THREE.MathUtils.degToRad) as [number, number, number]), 'XYZ');

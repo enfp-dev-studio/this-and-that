@@ -89,6 +89,10 @@ export class Stage {
     this.scene.add(shadow);
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0xd8cdb8, 1.6));
+    // A soft cool rim from behind, so low-poly facets read against the dark background.
+    const rim = new THREE.DirectionalLight(0xc8d8ff, 0.9);
+    rim.position.set(-2.5, 3, -4);
+    this.scene.add(rim);
     const sun = new THREE.DirectionalLight(0xffffff, 2.2);
     sun.position.set(2.5, 4, 3);
     sun.castShadow = true;

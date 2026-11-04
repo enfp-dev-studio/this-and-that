@@ -13,7 +13,7 @@
 
 type Vec = number[];
 export type FitStroke = { id: number; drawnFrom: Vec; plane: 'view' | 'ground' | 'surface'; bbox: { min: Vec; max: Vec }; points: Vec[]; trace?: Vec[]; pen?: string };
-export type FitPart = { name: string; primitive: string; center: Vec; size: Vec; rotation: Vec; strokes: number[]; path?: Vec[]; radii?: number[]; outline?: Vec[] };
+export type FitPart = { name: string; primitive: string; center: Vec; size: Vec; rotation: Vec; strokes: number[]; path?: Vec[]; radii?: number[]; outline?: Vec[]; style?: 'flame' | 'guard'; tongues?: number[][]; thickness?: number };
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 
@@ -204,14 +204,60 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
     // Into the region (parts Spark already put there, like an armrest's two posts, keep their layout).
     let q: P = { ...p, center: p.center.map((c, a) => (want[a] ? Math.min(want[a]!.hi, Math.max(want[a]!.lo, c)) : c)) };
     // A horn or wing grows from its base: that goes where its strokes meet the model.
-    if (shapePoints(p) && guide.length && old.length) {
+    // (Flames come back as any kind of part, an extrude of the outline included: they get their form here too.)
+    const flamey = /\b(flames?|fire|blaze)\b/i.test(`${p.name.replace(/_/g, ' ')} ${said}`);
+    if ((shapePoints(p) || (flamey && own.length)) && guide.length && old.length) {
       const dist = (v: Vec) => Math.min(...old.map((o) => Math.hypot(...[0, 1, 2].map((a) => Math.max(0, o.min[a] - v[a], v[a] - o.max[a])))));
       const ends = guide.flatMap((s) => [s.points[0], s.points.at(-1)!].map((v) => ({ v, s })));
       const { v, s } = ends.sort((x, y) => dist(x.v) - dist(y.v))[0];
       const f = s.plane === 'view' ? fixes(s) : [true, true, true];
       q = { ...p, center: p.center.map((c, a) => (f[a] ? v[a] : c)) };
       const drawn = own.find((g) => drawsShape(g, said));
+      const hostX = (Math.min(...old.map((b) => b.min[0])) + Math.max(...old.map((b) => b.max[0]))) / 2;
+      const hostH = Math.max(...old.map((b) => b.max[1])) - Math.min(...old.map((b) => b.min[1]));
       const toModel = (v: Vec) => old.map((o) => ({ o, d: Math.hypot(...[0, 1, 2].map((a) => Math.max(0, o.min[a] - v[a], v[a] - o.max[a]))) })).sort((x, y) => x.d - y.d)[0];
+      if (drawn && flamey && p.primitive !== 'tube') {
+        // Flames along an edge: the drawn zigzag split into tongues, in a frame on that edge
+        // (x out of it, y along it), rooted into it.
+        const tr = resampled(trace(drawn), 64);
+        const d = tr.map((x) => toModel(x).d);
+        const dmin = Math.min(...d);
+        const roots = tr.filter((_, i) => d[i] <= dmin + 0.012);
+        const nrm = unit(tr.reduce((acc, a, i) => { const b = tr[(i + 1) % tr.length]; return [acc[0] + (a[1] - b[1]) * (a[2] + b[2]), acc[1] + (a[2] - b[2]) * (a[0] + b[0]), acc[2] + (a[0] - b[0]) * (a[1] + b[1])]; }, [0, 0, 0]));
+        const lo = roots.reduce((b, x) => (x[1] < b[1] ? x : b)), hi = roots.reduce((b, x) => (x[1] > b[1] ? x : b));
+        const e = unit(sub(hi, lo).map((c, i) => c - dot(sub(hi, lo), nrm) * nrm[i]));
+        let u = cross(e, nrm);
+        const mid = tr.reduce((acc, x) => acc.map((c, i) => c + x[i] / tr.length), [0, 0, 0]);
+        if (dot(u, sub(mid, lo)) < 0) u = u.map((c) => -c);
+        const n = cross(u, e);
+        const local = tr.map((x) => [dot(sub(x, lo), u), dot(sub(x, lo), e)]);
+        const ys = local.map(([, y]) => y), [y0, y1] = [Math.min(...ys), Math.max(...ys)];
+        // The outer edge along the flame: the farthest reach in each band, then its peaks (tongue tips) and valleys.
+        const N = 28, reach = Array.from({ length: N }, (_, k) => { const a = y0 + ((y1 - y0) * k) / N, b = y0 + ((y1 - y0) * (k + 1)) / N; return Math.max(0, ...local.filter(([, y]) => y >= a && y <= b).map(([x]) => x)); });
+        const top = Math.max(...reach);
+        const peaks = reach.map((r, k) => ({ r, k })).filter(({ r, k }) => r >= 0.35 * top && r >= (reach[k - 1] ?? 0) && r >= (reach[k + 1] ?? 0));
+        const tips = peaks.filter((pk, i) => !peaks[i - 1] || pk.k - peaks[i - 1].k > 2).sort((a, b) => b.r - a.r).slice(0, 5).sort((a, b) => a.k - b.k);
+        const yOf = (k: number) => y0 + ((y1 - y0) * (k + 0.5)) / N;
+        const tongues = tips.map((tp, i) => {
+          const left = i ? Math.round((tips[i - 1].k + tp.k) / 2) : 0, right = i < tips.length - 1 ? Math.round((tp.k + tips[i + 1].k) / 2) : N - 1;
+          return [r3(yOf(left) - (i ? 0 : 0.5 * (y1 - y0) / N)), r3(yOf(right) + (i < tips.length - 1 ? 0 : 0.5 * (y1 - y0) / N)), r3(tp.r), r3(yOf(tp.k))];
+        });
+        const base = Math.max(...tongues.map(([a, b]) => b - a));
+        q = { ...p, primitive: 'membrane', style: 'flame', center: lo.map(r3), rotation: euler(u, e, n), outline: local.map(([x, y]) => [r3(x), r3(y)]), tongues, thickness: r3(Math.max(0.006, 0.14 * base)), size: [r3(top), r3(y1 - y0), r3(Math.max(0.006, 0.14 * base))] };
+        log(`[fit] ${p.name}: ${tongues.length} flame tongues along the drawn edge`);
+        return q;
+      }
+      if (drawn && p.primitive === 'tube' && /guard|hilt|quillon/i.test(p.name)) {
+        // A guard: the drawn curve made exactly symmetric about the model's axis, a flattened hexagon in section.
+        const tr = resampled(trace(drawn), 25);
+        if (tr[0][0] > tr.at(-1)![0]) tr.reverse();
+        const sym = tr.map((x, i) => { const m = tr[tr.length - 1 - i]; return [(x[0] + 2 * hostX - m[0]) / 2, (x[1] + m[1]) / 2, (x[2] + m[2]) / 2]; });
+        const root = sym[0];
+        const hH = r3(0.018 * hostH);
+        q = { ...p, style: 'guard', center: root.map(r3), rotation: [0, 0, 0], path: sym.map((x) => sub(x, root).map(r3)), radii: [hH, hH], thickness: hH };
+        log(`[fit] ${p.name}: a symmetric guard along the drawn curve`);
+        return q;
+      }
       if (drawn && p.primitive === 'tube') {
         // A horn along the drawn curve, from the end at the model, its base sunk a little into the model.
         const tr = resampled(trace(drawn), 14);
@@ -288,7 +334,7 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
 
   // A horn: thick at the base (at least an eighth of its length across), tapering to a near point.
   const taper = (p: P): P => {
-    if (p.primitive !== 'tube' || (p.path?.length ?? 0) < 2) return p;
+    if (p.primitive !== 'tube' || p.style === 'guard' || (p.path?.length ?? 0) < 2) return p;
     const len = p.path!.slice(1).reduce((s, q, i) => s + Math.hypot(...sub(q, p.path![i])), 0);
     const base = Math.min(0.2 * len, Math.max(Math.abs(p.radii?.[0] ?? 0), 0.07 * len));
     const tip = Math.min(Math.abs(p.radii?.[1] ?? 0), 0.3 * base);

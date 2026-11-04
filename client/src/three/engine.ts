@@ -241,7 +241,7 @@ class Engine3D {
       let q = p;
       // A tube that already runs through the model (a guard across a blade) stays as drawn.
       const through = p.primitive === 'tube' && p.path?.some((v) => box.containsPoint(root.clone().add(new THREE.Vector3().fromArray(v))));
-      if ((p.primitive === 'tube' || p.primitive === 'membrane') && !through) {
+      if ((p.primitive === 'tube' || p.primitive === 'membrane') && !through && p.style !== 'flame') {
         const inset = p.primitive === 'tube' ? Math.abs(p.radii?.[0] ?? 0.02) * 0.6 : 0.005;
         const to = hit.point.clone().addScaledVector(dir, inset);
         const shift = root.clone().sub(to);

@@ -34,6 +34,9 @@ export type Part = {
   path?: number[][]; // tube: control points from its base (the center), in the part's frame
   radii?: number[]; // tube: [base, tip] radius
   outline?: number[][]; // membrane: its flat outline, [x, y] in the part's frame, from its root (the center)
+  style?: 'flame' | 'guard'; // a crafted low-poly form for a drawn flame or guard (fit-parts.ts)
+  tongues?: number[][]; // flame: [y0, y1, tipX, tipY] per tongue, in the part's frame (x out of the edge, y along it)
+  thickness?: number; // flame: tongue thickness; guard: section height
 };
 export type Answer = { subject: string; say: string; parts: Part[] };
 
