@@ -75,13 +75,26 @@ export async function applyPaint(stage: Stage, image: string, cam: THREE.Camera,
   cam.updateMatrixWorld();
   const projMat = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
   const camPos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
-  const mix = { value: 0 };
   stage.model.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
     const mat = mesh.material as THREE.MeshStandardMaterial;
+    // Painted before: three.js reuses the compiled program, so just update the
+    // uniforms it already holds.
+    const u = mat.userData.paint;
+    if (u) {
+      u.uPaint.value = tex;
+      u.uProjMat.value = projMat;
+      u.uProjPos.value = camPos;
+      u.uRemap.value = remap;
+      u.uMix.value = 0;
+      mat.userData.paintMix = u.uMix;
+      return;
+    }
+    const uniforms = { uPaint: { value: tex }, uProjMat: { value: projMat }, uProjPos: { value: camPos }, uMix: { value: 0 }, uRemap: { value: remap } };
+    mat.userData.paint = uniforms;
     mat.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, { uPaint: { value: tex }, uProjMat: { value: projMat }, uProjPos: { value: camPos }, uMix: mix, uRemap: { value: remap } });
+      Object.assign(shader.uniforms, uniforms);
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nuniform mat4 uProjMat;\nvarying vec4 vProj;\nvarying vec3 vWPos;\nvarying vec3 vWNormal;')
         .replace('#include <project_vertex>', '#include <project_vertex>\nvec4 pw = modelMatrix * vec4(transformed, 1.0);\nvProj = uProjMat * pw;\nvWPos = pw.xyz;\nvWNormal = normalize(mat3(modelMatrix) * objectNormal);');
@@ -102,12 +115,16 @@ export async function applyPaint(stage: Stage, image: string, cam: THREE.Camera,
     };
     mat.customProgramCacheKey = () => 'painted';
     mat.needsUpdate = true;
+    mat.userData.paintMix = uniforms.uMix;
   });
+  const mixes: { value: number }[] = [];
+  stage.model.traverse((o) => (o as THREE.Mesh).isMesh && mixes.push(((o as THREE.Mesh).material as THREE.Material).userData.paintMix));
   // Fade the paint in.
   const t0 = performance.now();
   const fade = () => {
-    mix.value = Math.min(1, (performance.now() - t0) / 900);
-    if (mix.value < 1) requestAnimationFrame(fade);
+    const k = Math.min(1, (performance.now() - t0) / 900);
+    for (const m of mixes) if (m) m.value = k;
+    if (k < 1) requestAnimationFrame(fade);
   };
   fade();
 }
