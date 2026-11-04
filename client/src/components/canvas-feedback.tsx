@@ -74,6 +74,15 @@ export function FailNotice() {
 // Each understood instruction beside its mark: "① brooch → like the rose ref".
 export function Callouts() {
   const s = useEditor();
+  // Once the result is in, the callouts step aside after a moment so the
+  // change itself shows; pointing at one brings it back.
+  const [quiet, setQuiet] = useState(false);
+  useEffect(() => {
+    setQuiet(false);
+    if (s.mode !== 'review') return;
+    const t = setTimeout(() => setQuiet(true), 2500);
+    return () => clearTimeout(t);
+  }, [s.mode]);
   if (!s.edits.length || s.peek || (s.mode !== 'processing' && s.mode !== 'review')) return null;
   return (
     <>
@@ -84,7 +93,7 @@ export function Callouts() {
         return (
           <Tooltip key={e.mark}>
             <TooltipTrigger asChild>
-              <Badge variant="secondary" className="absolute max-w-(--callout-width) -translate-y-1/2 shadow-lg" style={{ left: at.x, top: at.y }}>
+              <Badge variant="secondary" className={cn('absolute max-w-(--callout-width) -translate-y-1/2 shadow-lg transition-opacity duration-500', quiet && 'opacity-0 hover:opacity-100')} style={{ left: at.x, top: at.y }}>
                 <MarkBadge mark={e.mark} />
                 {s.localMarks.includes(e.mark) && <Zap />}
                 {e.kind === 'sketch' && <PenTool />}
