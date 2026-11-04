@@ -19,7 +19,7 @@ The browser uploads the image once. While you talk, each mark goes to the server
 
 A round trip takes about 20–22 s from release, most of it Muse Image (~13 s). The outlines appear within about 1 s of release and the understood instructions after 7–9 s. Until the result arrives, a sheen runs over the marked regions.
 
-Every job writes its per-stage timing and the token usage of each call to `out/jobs/<id>/trace.json`. `node m0/bench.ts` replays the test clips the way the client sends them and prints both.
+Every job writes its per-stage timing and the token usage of each call to `out/jobs/<id>/trace.json`. `node --env-file=.env m0/bench.ts` replays the test clips the way the client sends them and prints both.
 
 ## Setup
 

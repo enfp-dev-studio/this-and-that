@@ -18,6 +18,7 @@ import sharp from 'sharp';
 import { transcribe, type Mask } from './meta.ts';
 import { guideImage, museEdit, museEditSpoken, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal } from './local.ts';
+import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, colorOf, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
 
@@ -88,6 +89,7 @@ type Job = {
   via?: string;
   resultImageId?: string;
   previewImageId?: string; // instant edits, shown while Muse Image still works
+  asrVia?: string; // realtime or batch
   localMarks?: number[];
   speculation?: string; // right, wrong, skipped
   error?: string;
@@ -95,11 +97,27 @@ type Job = {
 };
 const jobs = new Map<string, Job>();
 
+// Realtime transcription sessions, one per recording; dropped after a minute.
+const liveAsr = new Map<string, RealtimeAsr>();
+function startLiveAsr() {
+  const id = newId();
+  const asr = new RealtimeAsr();
+  liveAsr.set(id, asr);
+  setTimeout(() => (asr.close(), liveAsr.delete(id)), 60_000);
+  return id;
+}
+
+async function readBody(req: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  return Buffer.concat(chunks);
+}
+
 // Experiments, each switchable per request (body.opts) or by env default.
 type Opts = { instant: boolean; speculate: boolean };
 const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE !== '0' };
 
-async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts) {
+async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr) {
   const dir = join(jobsDir, job.id);
   mkdirSync(dir, { recursive: true });
   const trace = new Trace();
@@ -116,9 +134,18 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     writeFileSync(join(dir, 'voice.webm'), audioBuf);
     wavPath = await T('to wav', () => toWav(join(dir, 'voice.webm'), join(dir, 'voice.wav')));
   }
-  const asr = wavPath
-    ? T('transcribe', () => transcribe(readFileSync(wavPath!), trace)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null))
-    : Promise.resolve(null);
+  // The realtime transcript (streamed while talking) if it arrives, else batch.
+  const batch = () => T('transcribe', () => transcribe(readFileSync(wavPath!), trace)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null));
+  const asr = (async () => {
+    const text = live ? await T('transcribe (realtime end)', () => live.finish()) : null;
+    live?.close();
+    job.asrVia = text ? 'realtime' : 'batch';
+    if (text) {
+      trace.addUsage('transcribe (realtime)', { audioDurationMs: wavPath ? await audioDurationMs(wavPath) : 0 });
+      return { transcript: text, turns: [] };
+    }
+    return wavPath ? batch() : null;
+  })();
   asr.then((r) => (job.transcript = r?.transcript));
   const video = T('render video', async () => {
     const durationMs = wavPath ? await audioDurationMs(wavPath) : 0;
@@ -207,18 +234,14 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   job.stage = 'done';
   const totalMs = Date.now() - job.startedAt;
   console.log(`[${job.id}] done in ${totalMs} ms: ${trace.summary()}`);
-  writeFileSync(join(dir, 'trace.json'), JSON.stringify({ totalMs, opts, speculation: job.speculation, localMarks: job.localMarks, spans: trace.spans, usage: trace.usage }, null, 2));
+  writeFileSync(join(dir, 'trace.json'), JSON.stringify({ totalMs, opts, asr: job.asrVia, speculation: job.speculation, localMarks: job.localMarks, spans: trace.spans, usage: trace.usage }, null, 2));
 }
 
 // ---------- http ----------
 
 const decodeDataUrl = (s?: string) => (s ? Buffer.from(s.slice(s.indexOf(',') + 1), 'base64') : null);
 
-async function readJson(req: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-}
+const readJson = async (req: IncomingMessage) => JSON.parse((await readBody(req)).toString('utf8'));
 
 const TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
@@ -247,6 +270,15 @@ createServer(async (req, res) => {
       const img = await storeImage(buf);
       return send(res, 200, { imageId: img.id, width: img.width, height: img.height });
     }
+    // Realtime transcription: open on record, PCM chunks while talking (each
+    // reply carries the transcript so far, for live captions).
+    if (req.method === 'POST' && url.pathname === '/api/asr') return send(res, 200, { asrId: startLiveAsr() });
+    if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'asr' && parts[2]) {
+      const asr = liveAsr.get(parts[2]);
+      if (!asr) return send(res, 404, { error: 'no such transcription' });
+      await asr.send(await readBody(req));
+      return send(res, 200, { text: asr.text });
+    }
     if (req.method === 'POST' && url.pathname === '/api/marks') {
       const body = await readJson(req);
       const img = images.get(body.imageId);
@@ -267,7 +299,9 @@ createServer(async (req, res) => {
       jobs.set(job.id, job);
       const strokes = raw.map(({ mark, points }) => scaleStroke({ mark, points }, img.k));
       const opts: Opts = { ...DEFAULT_OPTS, ...(body.opts ?? {}) };
-      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts).catch((e) => {
+      const live = body.asrId ? liveAsr.get(String(body.asrId)) : undefined;
+      if (live) liveAsr.delete(String(body.asrId));
+      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts, live).catch((e) => {
         console.error(`[${job.id}]`, e);
         job.error = String(e.message ?? e);
         job.stage = 'error';
