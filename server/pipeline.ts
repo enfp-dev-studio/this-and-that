@@ -123,6 +123,9 @@ function samPrompt(s: Stroke, small: Small): SamObject {
   const b = strokeBox(s);
   const [p0, p1] = [s.points[0], s.points.at(-1)!];
   const size = Math.max(b.right - b.left, b.bottom - b.top);
+  // A tap: the point alone. With a tiny box around it SAM outlines a
+  // fragment (a 35×48 px blob of a macaron); with the point, the whole thing.
+  if (size * scale < 8) return { id: s.mark, points: [{ x: cx(p0.x), y: cy(p0.y) }] };
   const closed = Math.hypot(p1.x - p0.x, p1.y - p0.y) < 0.3 * size;
   const grow = closed ? 0 : Math.max(0.2 * size, 12 / scale);
   const box = { left: cx(b.left - grow), top: cy(b.top - grow), right: cx(b.right + grow) + 1, bottom: cy(b.bottom + grow) + 1 };
@@ -334,6 +337,9 @@ export function splitClauses(transcript: string, marks: number): string[] | null
   }
   // Words before the first deictic word ("그리고") belong to it.
   if (clauses.length > 1 && !DEICTIC.test(clauses[0][0])) clauses[1].unshift(...clauses.shift()!);
+  // A clause with no "this / that" word means the recogniser lost it ("이거
+  // 초콜릿으로" heard as "가초콜릿으로"): the words can't be trusted, Spark decides.
+  if (!clauses.every((c) => c.some((w) => DEICTIC.test(w)))) return null;
   return clauses.length === marks ? clauses.map((c) => c.join(' ')) : null;
 }
 
