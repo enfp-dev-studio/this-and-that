@@ -490,7 +490,24 @@ function lowSwordSteps([x0, y0, z0]: number[], [x1, y1, z1]: number[]): Steps {
   ];
 }
 
-async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword' | 'lowsword' = 'helmet') {
+// Reshaping the low-poly sword itself, with clean strokes: a straight line up
+// from the tip (longer), an arc along the blade (a katana's curve), a small
+// circle on the guard's centre (a gem).
+function reshapeSteps([x0, y0, z0]: number[], [x1, y1, z1]: number[]): Steps {
+  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, h = y1 - y0, front = z1 + 0.004;
+  const tipTo = y1 + 0.22 * h, guardTop = y0 + 0.345 * h, guardY = y0 + 0.31 * h;
+  const line = Array.from({ length: 8 }, (_, i) => [cx, y1 + 0.01 + ((tipTo - y1 - 0.01) * i) / 7, cz]);
+  const arc = Array.from({ length: 14 }, (_, i) => { const t = i / 13; return [cx + 0.16 * h * Math.pow(t, 1.8), guardTop + 0.02 + t * (tipTo - guardTop - 0.04), front]; });
+  const r = 0.024 * h;
+  const ring = Array.from({ length: 22 }, (_, i) => { const a = Math.PI / 2 + (i / 20) * 2 * Math.PI; return [cx + r * Math.cos(a), guardY + r * 0.85 * Math.sin(a), front]; });
+  return [
+    { say: 'Make the blade this long.', draw: [['front', [line]]] },
+    { say: 'Curve it like this, like a katana.', draw: [['front', [arc]]] },
+    { say: 'Set a gem here.', draw: [['front', [ring]]] },
+  ];
+}
+
+async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword' | 'lowsword' | 'reshape' = 'helmet') {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.locator('[role=radio][aria-label="3D"]').click();
   await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
@@ -501,21 +518,22 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
   const voiceAt = Date.now() / 1000;
   await page.locator('button:has-text("Open")').click();
   await sleep(500);
-  await page.locator(`text=Sample model: a ${{ sword: 'sword', lowsword: 'low-poly sword', helmet: 'sci-fi helmet' }[which]}`).click();
+  await page.locator(`text=Sample model: a ${{ sword: 'sword', lowsword: 'low-poly sword', reshape: 'low-poly sword', helmet: 'sci-fi helmet' }[which]}`).click();
   await page.waitForFunction(() => (window as any).stage?.model.children.some((c: any) => c.type === 'Group' && c.children.length), undefined, { timeout: 30_000 });
   await sleep(800);
   // Framed close, turning a moment.
-  const bb = await page.evaluate(() => {
+  const bb = await page.evaluate((which) => {
     const { THREE, stage } = window as any;
     const b = new THREE.Box3().setFromObject(stage.model);
     const c = b.getCenter(new THREE.Vector3());
-    stage.controls.target.set(c.x, c.y + 0.08, c.z);
-    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(2.2 * (b.max.y - b.min.y));
+    const tall = which === 'reshape' ? 1.22 : 1; // room for a longer blade
+    stage.controls.target.set(c.x, c.y + 0.08 + (tall - 1) * 0.5 * (b.max.y - b.min.y), c.z);
+    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(2.2 * tall * (b.max.y - b.min.y));
     stage.camera.position.copy(stage.controls.target).add(d);
     Object.assign(stage.controls, { autoRotate: true, autoRotateSpeed: 2.2 });
     stage.controls.update();
     return { min: b.min.toArray(), max: b.max.toArray() };
-  });
+  }, which);
   await sleep(2600);
   const [x0, y0, z0] = bb.min, [x1, y1, z1] = bb.max;
   const [w, h, d] = [x1 - x0, y1 - y0, z1 - z0], [cx, cy, cz] = [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2];
@@ -526,7 +544,9 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
       ? swordSteps(bb.min, bb.max)
       : which === 'lowsword'
         ? lowSwordSteps(bb.min, bb.max)
-        : [
+        : which === 'reshape'
+          ? reshapeSteps(bb.min, bb.max)
+          : [
           { say: 'Add horns like this.', draw: [['front', horns]] },
           { say: 'Add wings here.', draw: [['side', [wing]]] },
         ];
@@ -543,7 +563,7 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
   }
   await sleep(1500);
   let paintAt = 0, paintedAt = 0;
-  if (which === 'lowsword') {
+  if (which === 'lowsword' || which === 'reshape') {
     // A slow 140° turn: the added parts from several sides (no paint: it would repaint the model).
     await page.evaluate(
       () =>
@@ -790,6 +810,7 @@ for (const name of wanted) {
     else if (name === 'model3d') results[name] = await sceneModel3d(page, rec);
     else if (name === 'sword') results[name] = await sceneModel3d(page, rec, 'sword');
     else if (name === 'lowsword') results[name] = await sceneModel3d(page, rec, 'lowsword');
+    else if (name === 'reshape') results[name] = await sceneModel3d(page, rec, 'reshape');
     else if (name === 'emblem3d') results[name] = await sceneEmblem3d(page, rec);
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {

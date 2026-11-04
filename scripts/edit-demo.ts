@@ -532,8 +532,8 @@ if (opener) {
   await clip(opener, { ...(await pointing(opener, illust('armor.jpg'), plan2d(opener, illust('armor.jpg'), false, 1.6), [])), note: 'The stroke draws the new shape. Only that part changes.' });
   await closeUp(opener, illust('armor.jpg'));
 }
-await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 4);
-await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { text: 'The last 10% is details, and words can’t point.', size: 52, color: gray }], 4);
+await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 3.5);
+await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { text: 'The last 10% is details, and words can’t point.', size: 52, color: gray }], 3.5);
 // simple to complex: one tap, then edits where the stroke is the shape and the
 // place (only those that passed the acceptance check), three in one breath, 3D
 await macaronBeat();
@@ -557,7 +557,7 @@ await card(
     { text: 'This & That: 0.6%.', size: 46, weight: 600, gap: 10 },
     { text: 'What changed: text-only (left) vs This & That (right), removing one fire hydrant', size: 30, color: gray },
   ],
-  5,
+  4,
   { file: join(root, 'out', 'bench-hard', 'diff-street.jpg'), width: 1500 },
 );
 // how it works
@@ -570,14 +570,14 @@ await card(
     { text: 'Muse Image: the edit', size: 44 },
     { text: 'Voice Transcribe: hears you live', size: 44 },
   ],
-  6,
+  4.5,
 );
 // next: 3D
 await card([{ text: 'The same gesture, on a 3D model.', size: 72, weight: 600 }, { text: 'Draw the shape on it and say what it is: the strokes become the parts.', size: 44, color: gray }], 3.5);
 // A detailed model opened (a sample model: the sword, else the helmet), parts
 // drawn on it and said: they follow the strokes. No paint: it would repaint the
 // model's own textures.
-const take3d = ['lowsword', 'sword', 'model3d'].find((n) => existsSync(join(demo, `${n}.timing.json`)))!;
+const take3d = ['reshape', 'lowsword', 'sword', 'model3d'].find((n) => existsSync(join(demo, `${n}.timing.json`)))!;
 if (existsSync(join(demo, `${take3d}.timing.json`))) {
   const t = timing(take3d);
   const steps = t.steps!;
@@ -589,8 +589,8 @@ if (existsSync(join(demo, `${take3d}.timing.json`))) {
     at = st.done + 1.1;
   }
   // Without a paint step the take ends on a slow turn around the new parts: keep it.
-  segs.push({ from: at, to: t.paint ? Math.min(t.paint - 0.6, at + 3.2) : Math.min(dur(join(demo, `${take3d}.mp4`)), at + 4.0) });
-  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, note: 'Strokes on a 3D model become parts that follow the drawn curve, in its low-poly style.' });
+  segs.push({ from: at, to: t.paint ? Math.min(t.paint - 0.6, at + 3.2) : Math.min(dur(join(demo, `${take3d}.mp4`)), at + 3.0) });
+  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, note: take3d === 'reshape' ? 'The model itself is reshaped: the blade follows the drawn line and arc.' : 'Strokes on a 3D model become parts that follow the drawn curve, in its low-poly style.' });
 }
 // A surface edit on the opened helmet: drawn and said, the result baked into its
 // textures, held from that view, then turned: it stays on the surface.
@@ -608,7 +608,7 @@ await card(
     { text: 'Show it. Say it. Done.', size: 46, color: gray, gap: 44 },
     { text: 'Built with Meta’s Muse models', size: 38, color: gray },
     { text: 'github.com/enfp-dev-studio/this-and-that', size: 38, color: gray },
-    { text: `3D sample models, CC0: ${take3d === 'lowsword' ? '“Sword” by Quaternius (Poly Pizza)' : '“Antique Estoc” by Ulan Cabanilla and James Ray Cock (Poly Haven)'}; “SciFiHelmet” by Michael Pavlovic (Khronos glTF Sample Assets)`, size: 24, color: gray, gap: 28 },
+    { text: `3D sample models, CC0: ${take3d === 'lowsword' || take3d === 'reshape' ? '“Sword” by Quaternius (Poly Pizza)' : '“Antique Estoc” by Ulan Cabanilla and James Ray Cock (Poly Haven)'}; “SciFiHelmet” by Michael Pavlovic (Khronos glTF Sample Assets)`, size: 24, color: gray, gap: 28 },
   ],
   6,
 );
