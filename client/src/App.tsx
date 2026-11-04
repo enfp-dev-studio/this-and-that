@@ -13,9 +13,12 @@ export function App() {
   useEffect(() => {
     editor.onError = (message) => toast.error('Something went wrong', { description: message });
     editor.onNotice = (message) => toast(message);
+    // Paste: the picture when none is open, otherwise a reference.
     const paste = (e: ClipboardEvent) => {
       const file = [...(e.clipboardData?.items ?? [])].find((i) => i.type.startsWith('image/'))?.getAsFile();
-      if (file) editor.openFile(file);
+      if (!file) return;
+      if (editor.getSnapshot().mode === 'empty') editor.openFile(file);
+      else editor.addRef(file);
     };
     document.addEventListener('paste', paste);
     return () => document.removeEventListener('paste', paste);
