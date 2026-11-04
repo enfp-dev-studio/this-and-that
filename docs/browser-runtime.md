@@ -8,7 +8,7 @@ On the `browser-runtime` branch the whole app runs in the browser: the static bu
 |---|---|
 | `server/index.ts` (images, marks, jobs, priors, realtime ASR sessions) | `index.ts`: the same steps and job states, read by the editor the way it used to poll |
 | `server/pipeline.ts`, `server/local.ts` (prompts, speculation, parts, instant edits) | `pipeline.ts`, `local.ts`: same code, pixels from Canvas instead of sharp |
-| `server/render.ts`: ffmpeg video, sharp guide image and paste-back | `render.ts`: WebCodecs H.264 + Opus (AAC where Opus isn't offered) muxed with `mp4-muxer`; Canvas for the guide image, crops, outlines and paste-back |
+| `server/render.ts`: ffmpeg video, sharp guide image and paste-back | `render.ts`: WebCodecs H.264 + Opus (AAC where Opus isn't offered) muxed with `mp4-muxer`; Canvas for the guide image, crops and outlines; `paste.ts` + `local.ts` run in a Web Worker (`pixels.worker.ts`) |
 | `server/meta.ts` with the key | `meta.ts`: the same calls (deadlines, one retry, hedged streaming Spark for 3D) through `/api/meta/*` on the Worker |
 | `server/asr.ts` relay | `RealtimeAsr` in `meta.ts`: a WebSocket to the Worker, which adds the key to the first message |
 | `server/3d/*` | `perceive.ts` (3D perception + Muse Image painting) |
@@ -53,7 +53,7 @@ Model time dominates and varies more between runs than the two versions differ (
 
 3D mode: the scripted chair builds in 15.1 s (6 parts, Spark 6.4 s, first part 5.3 s; the server version took 14–17 s); "양쪽에 팔걸이 달아 줘" by voice adds both armrests 5.0 s after release; painting with Muse Image 8.8 s.
 
-Public build (Worker v2: optional passcode, daily job cap, input limits): bench a–f 6/6 again (a 21.4, b 19.4, c 19.5, d 4.8, e 20.1, f 6.2 s); with no passcode the app opens straight to "Try a sample" and an edit counts exactly one job; with the job cap reached a take is refused at once with "Today's free quota is used up"; with a passcode set, the production build asks once, remembers it, and an edit runs cross-origin in 14.8 s. Main thread: the longest blocking task per job is 130–330 ms on this Mac (local edits and paste-back at full size).
+Public build (Worker v2: optional passcode, daily job cap, input limits): bench a–f 6/6 again (a 21.4, b 19.4, c 19.5, d 4.8, e 20.1, f 6.2 s); with no passcode the app opens straight to "Try a sample" and an edit counts exactly one job; with the job cap reached a take is refused at once with "Today's free quota is used up"; with a passcode set, the production build asks once, remembers it, and an edit runs cross-origin in 14.8 s. Main thread: instant edits and paste-back run in a Web Worker (`pixels.worker.ts`, main-thread fallback), so the longest blocking task per job dropped from 130–330 ms to 0–62 ms on this Mac, with the same results (bench a–f 6/6 again).
 
 Also checked: references (rose brooch reference → brooch redesigned, 31 s, Muse 23.8 s), a Shape sketch (pauldron spikes, kind `sketch`), Keep → next version, the passcode prompt (wrong passcode refused), a 429 shown as "Demo limit reached · Too many requests from your network (3 per minute). Try again in 45 seconds."
 

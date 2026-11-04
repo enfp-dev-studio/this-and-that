@@ -13,8 +13,9 @@
 //   imageUrl(id)                     the picture, for <img> and canvases
 
 import { blobToDataUrl, editImage, RealtimeAsr, transcribe, type Mask, type Turn } from './meta';
-import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandFrames, understandTranscript, understandVideo, type Edit, type Small } from './pipeline';
-import { applyLocal, LOCAL_OPS } from './local';
+import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, segmentMark, smallCopy, specMatches, splitClauses, understandFrames, understandTranscript, understandVideo, type Edit, type Small } from './pipeline';
+import { LOCAL_OPS } from './local';
+import { applyLocalOff, pasteMarkedOff } from './pixels';
 import { audioDurationMs, canEncodeVideo, warmUpVideo, colorOf, composeWithRefs, cropAround, dataUrlOf, drawn, encode, fromPixels, jpegUrl, keyFrames, maxVolumeDb, outlineImage, pixels, renderVideo, toWav, type Source, type Stroke } from './render';
 import { Trace } from './trace';
 import { all, del, get, loadBlob, put, removeBlob, saveBlob } from './store';
@@ -315,7 +316,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   // the picture (the good cuff to copy) is told to Muse but never changed.
   const promptEdits = edits.filter((e) => !/^no change/i.test(e.instruction));
   let generative = promptEdits.filter((e) => e.kind !== 'reference');
-  let local: ReturnType<typeof applyLocal> | null = null;
+  let local: Awaited<ReturnType<typeof applyLocalOff>> | null = null;
   if (opts.instant) {
     // A local edit where a generative one may also change things (a recolored
     // mug with a plant drawn in front of it) would fight the paste: Muse Image
@@ -332,7 +333,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
         }
       }
     }
-    local = await T('local edits', async () => applyLocal(original, edits, masks, toMuse));
+    local = await T('local edits', () => applyLocalOff(original, edits, masks, toMuse));
     if (local.done.size) {
       generative = generative.filter((e) => !local!.done.has(e.mark));
       job.localMarks = [...local.done];
@@ -362,13 +363,12 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     saveBlob(`${dir}/edited.jpg`, edited);
     job.stage = 'paste';
     const editedBitmap = await createImageBitmap(edited);
-    out = (await T('paste', async () => pasteMarked(original, editedBitmap, strokes, seg, generative))).out;
-    editedBitmap.close();
+    out = (await T('paste', () => pasteMarkedOff(original, editedBitmap, strokes, seg, generative))).out;
     // Local edits go on top, so a generative region that overlaps them (an
     // arrow crossing a recolored mug) can't undo them.
     if (local) {
       const notLocal = new Set(edits.map((e) => e.mark).filter((m) => !local!.done.has(m)));
-      out = (await T('local edits again', async () => applyLocal(out, edits, masks, notLocal))).out;
+      out = (await T('local edits again', () => applyLocalOff(out, edits, masks, notLocal))).out;
     }
   }
 

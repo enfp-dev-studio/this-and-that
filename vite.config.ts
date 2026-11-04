@@ -16,6 +16,8 @@ export default defineConfig({
   // Our own sample pictures ship as static files (/desk.png, /illust/…, /tasks/…).
   publicDir: fileURLToPath(new URL('./samples', import.meta.url)),
   build: { outDir: '../dist', emptyOutDir: true },
+  // The pixels worker (instant edits, paste-back) is an ES module.
+  worker: { format: 'es' },
   // The browser does the work; /api/meta goes to the Worker proxy (`wrangler dev`).
   server: { port: 5191, strictPort: true, proxy: { '/api/meta': { target: 'http://localhost:8801', ws: true, ...(devPasscode ? { headers: { 'x-demo-passcode': devPasscode } } : {}) } } },
 });
