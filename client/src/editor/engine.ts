@@ -4,7 +4,8 @@
 // its state through subscribe/getSnapshot; pointer drawing goes straight to
 // the canvas.
 
-import { postJson } from './api';
+import { runtime, type JobBody } from '../runtime';
+import { put } from '../runtime/store';
 import { LiveAsr } from './live-asr';
 import { markColor, themeVar, themeLength, watchTheme } from './colors';
 import { loadTrials, saveTrials, type Method, type Round, type Trial } from './experiment';
@@ -99,13 +100,12 @@ export const blobToDataUrl = (blob: Blob) =>
   });
 
 async function upload(url: string) {
-  const dataUrl = url.startsWith('data:') ? url : await blobToDataUrl(await (await fetch(url)).blob());
-  return (await postJson('/api/images', { image: dataUrl })).imageId as string;
+  return (await runtime.uploadImage(url)).imageId;
 }
 
-// Start the server's parts pass on a reference, so its part names are words
-// to listen for by the time the user talks about it.
-const findPartsOf = (ref: Ref) => ref.imageId.then((id) => fetch(`/api/images/${id}/parts`)).catch(() => {});
+// Start the parts pass on a reference, so its part names are words to listen
+// for by the time the user talks about it.
+const findPartsOf = (ref: Ref) => ref.imageId.then((id) => runtime.parts(id)).catch(() => {});
 
 const loadImage = async (url: string) => {
   const img = new Image();
@@ -161,8 +161,6 @@ class Editor {
   private pan: { x: number; y: number } | null = null; // right or middle mouse drag
   private touches = new Map<number, { x: number; y: number }>(); // fingers, once a pen is in use
 
-  private recorder: MediaRecorder | null = null;
-  private chunks: Blob[] = [];
   private t0 = 0;
   private micStream: MediaStream | null = null;
   private live: LiveAsr | null = null;
@@ -172,7 +170,7 @@ class Editor {
   private inputAt: number | null = null;
   private pending: (Omit<Round, 'waitMs' | 'kept'> & { sentAt: number }) | null = null;
   // The last request, so a failed edit can be sent again with one tap.
-  private lastSend: { body: Record<string, unknown>; jobId?: string } | null = null;
+  private lastSend: { body: JobBody; jobId?: string } | null = null;
 
   // ---------- store ----------
 
@@ -184,6 +182,28 @@ class Editor {
   private set(patch: Partial<Snapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const l of this.listeners) l();
+    if (patch.versions || patch.index !== undefined || patch.refs) this.remember();
+  }
+
+  // The history and references of this picture, kept in IndexedDB.
+  private session = crypto.randomUUID().slice(0, 8);
+  private remembering = false;
+  private remember() {
+    if (this.remembering) return;
+    this.remembering = true;
+    queueMicrotask(async () => {
+      this.remembering = false;
+      const { versions, index, refs } = this.snapshot;
+      try {
+        put('sessions', {
+          id: this.session,
+          at: Date.now(),
+          versions: await Promise.all(versions.map((v) => v.imageId)),
+          index,
+          refs: await Promise.all(refs.map(async (r) => ({ id: r.id, imageId: await r.imageId, pinned: r.pinned }))),
+        });
+      } catch {}
+    });
   }
 
   // ---------- canvases ----------
@@ -477,7 +497,7 @@ class Editor {
   private async loadParts(v: Version) {
     try {
       const imageId = await v.imageId;
-      const { parts } = await (await fetch(`/api/images/${imageId}/parts`)).json();
+      const parts = await runtime.parts(imageId);
       if (LAB && this.current() === v) this.parts = { url: v.url, list: parts ?? [] };
     } catch {
       // Optional: without parts there are just no keywords (and no lab hover label).
@@ -650,9 +670,9 @@ class Editor {
     const markId = (s.markId = crypto.randomUUID().slice(0, 8));
     try {
       const imageId = await this.current()!.imageId;
-      const r = await postJson('/api/marks', { imageId, markId, stroke: { mark: s.mark, points: s.points } });
+      const r = await runtime.mark(imageId, markId, { mark: s.mark, points: s.points });
       if (s.markId !== markId) return; // the stroke changed shape meanwhile (unsnapped) and was sent again
-      if (r.found) s.mask = await loadImage(r.overlay);
+      if (r.found && r.overlay) s.mask = await loadImage(r.overlay);
     } catch (err) {
       console.warn('SAM for mark', s.mark, 'failed:', err);
     }
@@ -827,23 +847,15 @@ class Editor {
     this.markInput();
     this.strokes = [];
     this.forgetSnap();
-    this.chunks = [];
     this.set({ mode: 'recording', marks: 0, compare: false, ...this.emptyPanel() });
     this.t0 = performance.now();
     try {
       this.micStream ??= await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-      this.recorder = new MediaRecorder(this.micStream);
-      this.recorder.ondataavailable = (ev) => ev.data.size && this.chunks.push(ev.data);
-      this.recorder.start(250);
       // The clock starts when audio does, so stroke times line up with the voice.
       this.t0 = performance.now();
-      try {
-        this.live = new LiveAsr(this.micStream, (text) => this.snapshot.mode === 'recording' && text && this.set({ caption: text }), this.listenFor());
-      } catch {
-        this.live = null; // batch transcription on the server still works
-      }
+      this.live = new LiveAsr(this.micStream, (text) => this.snapshot.mode === 'recording' && text && this.set({ caption: text }), this.listenFor(), this.t0);
     } catch (err) {
-      this.recorder = null;
+      this.live = null;
       this.onNotice(`Microphone unavailable (${(err as Error).message}). Allow it to say what to change.`);
     }
   }
@@ -854,29 +866,20 @@ class Editor {
   }
 
   private cancelRecording() {
-    this.recorder?.stop();
-    this.recorder = null;
-    this.live?.stop();
+    this.live?.cancel();
     this.live = null;
     this.set({ mode: 'idle' });
   }
 
   private async stopAndSend() {
     this.forgetSnap(); // what is sent is final
-    const rec = this.recorder;
-    const audio = rec
-      ? await new Promise<Blob>((resolve) => {
-          rec.onstop = () => resolve(new Blob(this.chunks, { type: rec.mimeType }));
-          rec.stop();
-        })
-      : null;
-    this.recorder = null;
-    const asrId = this.live ? this.live.stop() : Promise.resolve(null);
+    const voice = this.live ? this.live.stop() : Promise.resolve(null);
     this.live = null;
     const speechMs = performance.now() - this.t0;
     if (this.snapshot.experiment && this.snapshot.method === 'voice') {
       this.markSent({ chars: 0, speechMs, marks: 0 });
-      return this.sendWhole({ audio: audio ? await blobToDataUrl(audio) : null, asrId: await asrId });
+      const v = await voice;
+      return this.sendWhole({ pcm: v?.pcm ?? null, asr: v?.asr ?? null });
     }
     if (!this.strokes.some((s) => !s.on)) {
       this.set({ mode: 'idle' });
@@ -889,21 +892,22 @@ class Editor {
     this.animate();
     try {
       const refId = (id?: string) => this.snapshot.refs.find((r) => r.id === id)?.imageId;
-      const body = {
+      const v = await voice;
+      const body: JobBody = {
         imageId: await this.current()!.imageId,
         strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on, pen }) => ({ mark, points, markId, pen, on: on ? await refId(on) : undefined }))),
         pinned: await Promise.all(this.snapshot.refs.filter((r) => r.pinned).map((r) => r.imageId)),
-        audio: audio ? await blobToDataUrl(audio) : null,
+        pcm: v?.pcm ?? null,
       };
-      await this.sendJob(body, { asrId: await asrId });
+      await this.sendJob(body, { asr: v?.asr ?? null });
     } catch (err) {
       this.fail((err as Error).message);
     }
   }
 
-  private async sendJob(body: Record<string, unknown>, once: Record<string, unknown> = {}) {
+  private async sendJob(body: JobBody, once: Partial<JobBody> = {}) {
     this.lastSend = { body };
-    const { id } = await postJson('/api/jobs', { ...body, ...once });
+    const { id } = runtime.startJob({ ...body, ...once });
     this.lastSend.jobId = id;
     await this.follow(id);
   }
@@ -961,11 +965,11 @@ class Editor {
   }
 
   // Type and Voice: no marks, the whole picture as Muse Image redraws it.
-  private async sendWhole(body: { text?: string; audio?: string | null; asrId?: string | null }) {
+  private async sendWhole(body: { text?: string; pcm?: Int16Array | null; asr?: JobBody['asr'] }) {
     this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'done' }, elapsedMs: 0, marks: 0 });
     try {
-      const { asrId, ...rest } = body;
-      await this.sendJob({ imageId: await this.current()!.imageId, whole: true, ...rest }, { asrId });
+      const { asr, ...rest } = body;
+      await this.sendJob({ imageId: await this.current()!.imageId, whole: true, ...rest }, { asr });
     } catch (err) {
       this.fail((err as Error).message);
     }
@@ -1038,7 +1042,8 @@ class Editor {
     const started = performance.now();
     for (;;) {
       if (performance.now() - started > 150_000) throw new Error('no answer in 150 s');
-      const job: Job = await (await fetch(`/api/jobs/${id}`, { signal: AbortSignal.timeout(10_000) })).json();
+      const job: Job | null = runtime.job(id);
+      if (!job) throw new Error('no such job');
       if (job.error) throw new Error(job.error);
       const at = SERVER_STEPS.indexOf(job.stage as (typeof SERVER_STEPS)[number]);
       const steps = { ...this.snapshot.steps };
@@ -1063,13 +1068,13 @@ class Editor {
 
   // Local edits are done: show them now, keep the sheen on what Muse is still editing.
   private async showPreview(id: string, localMarks: number[]) {
-    this.preview = await loadImage(`/api/images/${id}.jpg`);
+    this.preview = await loadImage(runtime.imageUrl(id));
     for (const s of this.strokes) if (localMarks.includes(s.mark)) s.settled = true;
     this.draw();
   }
 
   private async showResult(resultImageId: string) {
-    const result: Version = { url: `/api/images/${resultImageId}.jpg`, imageId: Promise.resolve(resultImageId) };
+    const result: Version = { url: runtime.imageUrl(resultImageId), imageId: Promise.resolve(resultImageId) };
     await loadImage(result.url);
     this.markResult();
     this.set({ mode: 'review', result, compare: true, steps: { sam: 'done', understand: 'done', edit: 'done', paste: 'done' } });

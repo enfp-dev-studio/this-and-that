@@ -12,7 +12,7 @@ export type Task = {
   type: string; // Type way (and what to say in the Voice way)
 };
 
-const sample = (path: string) => `/api/samples/${path}`;
+const sample = (path: string) => `/${path}`;
 
 export const TASKS: Task[] = [
   {
@@ -69,5 +69,5 @@ export const SAMPLES = [
   { title: 'Key visual', url: sample('illust/keyvisual.jpg') },
   { title: 'Gothic, mismatched cuff', url: sample('tasks/gothic-cuff.jpg') },
   { title: 'Key visual, six-finger hand', url: sample('tasks/keyvisual-hand.jpg') },
-  { title: 'Desk with cat', url: '/api/sample' },
+  { title: 'Desk with cat', url: '/desk.png' },
 ];

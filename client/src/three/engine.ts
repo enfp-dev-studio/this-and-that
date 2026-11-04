@@ -11,6 +11,8 @@ import { renderViews, strokeColor, type View } from './views';
 import { Voice } from './voice';
 import { applyPaint, renderModel } from './paint';
 import { penStroke, screenOf } from './replay';
+import { paintModel, perceive } from '../runtime/perceive';
+import { put } from '../runtime/store';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
 export type Snapshot3D = {
@@ -214,9 +216,7 @@ class Engine3D {
     try {
       this.builder.finish();
       const { image, mask, cam } = renderModel(stage);
-      const res = await fetch('/api/3d/paint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, subject: this.subject, style }) });
-      const r = await res.json();
-      if (!res.ok) throw new Error(r.error);
+      const r = await paintModel(image, this.subject, style);
       await applyPaint(stage, r.image, cam, mask);
       this.set({ views: [{ name: 'MUSE IMAGE', image: r.image }, ...this.snapshot.views] });
       this.status(`Muse Image ${(r.ms / 1000).toFixed(1)} s · best seen from the painted side`);
@@ -255,46 +255,29 @@ class Engine3D {
     };
     stage.onTick(pulse);
     try {
-      const res = await fetch('/api/3d/perceive', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ views, transcript, strokes: strokes.map((s) => this.strokeInfo(s)), parts: builder.parts }),
-      });
-      if (!res.ok || !res.body) throw new Error(await res.text());
-      // NDJSON: parts arrive one by one while Spark writes them.
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
+      // Parts arrive one by one while Spark writes them.
       const got: Part[] = [];
-      let buf = '', said = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const ev = JSON.parse(buf.slice(0, nl));
-          buf = buf.slice(nl + 1);
-          if (ev.type === 'say') said = ev.say;
-          if (ev.type === 'part') {
-            got.push(ev.part);
-            builder.apply(got, sketch.strokes, true);
-            this.status(`Building · ${got.map((p) => p.name).join(', ')}`, true);
-          }
-          if (ev.type === 'error') throw new Error(ev.error);
-          if (ev.type === 'done') {
-            const a = ev.answer;
-            this.subject = a.subject;
-            this.builds.push({ parts: before, transcript });
-            builder.apply(a.parts, sketch.strokes);
-            sketch.settle();
-            stage.controls.autoRotateSpeed = 1.6;
-            stage.controls.autoRotate = true;
-            this.set({ result: { say: a.say || said || a.subject, parts: a.parts.map((p: Part) => ({ name: p.name, color: p.color })), ms: ev.ms } });
-            this.status(`${a.subject} · ${a.parts.length} parts · first part in ${(ev.firstMs / 1000).toFixed(1)} s · draw and talk to change it`);
-            (window as any).last = ev;
-          }
+      let said = '';
+      const t0 = Date.now();
+      const r = await perceive({ views, transcript, strokes: strokes.map((s) => this.strokeInfo(s)), parts: builder.parts }, (ev) => {
+        if (ev.type === 'say') said = ev.say;
+        if (ev.type === 'part') {
+          got.push(ev.part as Part);
+          builder.apply(got, sketch.strokes, true);
+          this.status(`Building · ${got.map((p) => p.name).join(', ')}`, true);
         }
-      }
+      });
+      const a = r.answer;
+      this.subject = a.subject;
+      this.builds.push({ parts: before, transcript });
+      builder.apply(a.parts as Part[], sketch.strokes);
+      sketch.settle();
+      stage.controls.autoRotateSpeed = 1.6;
+      stage.controls.autoRotate = true;
+      this.set({ result: { say: a.say || said || a.subject, parts: a.parts.map((p) => ({ name: p.name, color: p.color })), ms: r.ms } });
+      this.status(`${a.subject} · ${a.parts.length} parts · first part in ${(r.firstMs / 1000).toFixed(1)} s · draw and talk to change it`);
+      (window as any).last = { type: 'done', ...r };
+      put('models', { id: crypto.randomUUID().slice(0, 8), at: t0, transcript, subject: a.subject, say: a.say, parts: a.parts, ms: r.ms, firstMs: r.firstMs, usage: r.usage });
     } catch (e) {
       this.status(`That build didn’t come through: ${String(e).slice(0, 160)}`);
     } finally {

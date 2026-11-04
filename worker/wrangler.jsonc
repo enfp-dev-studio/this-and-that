@@ -1,0 +1,34 @@
+// This & That API proxy (see docs/deploy-cloudflare.md).
+// Secrets (not here): MODEL_API_KEY, DEMO_PASSCODE
+//   production: npx wrangler secret put <NAME> --config worker/wrangler.jsonc
+//   local dev:  worker/.dev.vars (git-ignored)
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "this-and-that-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  "durable_objects": {
+    "bindings": [{ "name": "LIMITER", "class_name": "Limiter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Limiter"] }],
+
+  "vars": {
+    // Comma-separated. One `*` may stand for a subdomain label (Pages preview deploys).
+    // The localhost entries are for local dev (Vite on :5191); they are harmless in
+    // production because every request still needs the passcode.
+    "ALLOWED_ORIGINS": "https://this-and-that.pages.dev,https://*.this-and-that.pages.dev,http://localhost:5191,http://127.0.0.1:5191",
+    // Units per UTC day: images/* = 10, chat/completions, responses, asr/transcribe = 1,
+    // one realtime ASR session = 1.
+    "IP_DAILY_UNITS": "600",
+    "GLOBAL_DAILY_UNITS": "6000",
+    // Requests per minute per IP (burst cap).
+    "IP_PER_MINUTE": "60",
+    // Longest realtime ASR session before the Worker closes it.
+    "ASR_SESSION_SECONDS": "300"
+  },
+
+  "dev": { "port": 8801 }
+}
