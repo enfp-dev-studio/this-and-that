@@ -34,7 +34,7 @@ function ToggleGroup({
       data-spacing={spacing}
       style={{ "--gap": spacing } as React.CSSProperties}
       className={cn(
-        "group/toggle-group flex w-fit items-center gap-[--spacing(var(--gap))] rounded-md data-[spacing=default]:data-[variant=outline]:shadow-xs",
+        "group/toggle-group flex w-fit items-center gap-[--spacing(var(--gap))] rounded-md data-[variant=segment]:rounded-full data-[spacing=default]:data-[variant=outline]:shadow-xs",
         className
       )}
       {...props}
@@ -67,8 +67,11 @@ function ToggleGroupItem({
           variant: context.variant || variant,
           size: context.size || size,
         }),
-        "w-auto min-w-0 shrink-0 px-3 focus:z-10 focus-visible:z-10",
+        // This & That: an icon item keeps its square touch size.
+        (context.size || size) === "icon-touch" ? "shrink-0 focus:z-10 focus-visible:z-10" : "w-auto min-w-0 shrink-0 px-3 focus:z-10 focus-visible:z-10",
         "data-[spacing=0]:rounded-none data-[spacing=0]:shadow-none data-[spacing=0]:first:rounded-l-md data-[spacing=0]:last:rounded-r-md data-[spacing=0]:data-[variant=outline]:border-l-0 data-[spacing=0]:data-[variant=outline]:first:border-l",
+        // The segmented choice is a pill, like the rest of the chrome.
+        "data-[variant=segment]:first:rounded-l-full data-[variant=segment]:last:rounded-r-full",
         className
       )}
       {...props}
