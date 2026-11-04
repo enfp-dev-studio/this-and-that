@@ -20,6 +20,8 @@ import { Trace } from './trace';
 import { get, put, saveBlob } from './store';
 
 const MAX_SIDE = 2048;
+const MAX_UPLOAD_BYTES = 40e6;
+const MAX_UPLOAD_PIXELS = 60e6;
 // Probe the video codecs and wake the encoder before the first edit needs them.
 setTimeout(warmUpVideo, 1500);
 const newId = () => crypto.randomUUID().slice(0, 8);
@@ -39,6 +41,10 @@ async function storeImage(input: Blob | ImageData, id = newId()): Promise<Stored
     [bitmap, blob] = await Promise.all([createImageBitmap(c), encode(c, 'image/jpeg', 0.95)]);
   } else {
     const first = await createImageBitmap(input);
+    if (first.width * first.height > MAX_UPLOAD_PIXELS) {
+      first.close();
+      throw new Error(`that picture is over ${MAX_UPLOAD_PIXELS / 1e6} megapixels`);
+    }
     k = Math.min(1, MAX_SIDE / Math.max(first.width, first.height));
     if (k === 1) [bitmap, blob] = [first, input]; // <img> shows the upload itself
     else {
@@ -171,7 +177,10 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   if (wav) saveBlob(`${dir}/voice.wav`, wav);
   // No voice, no edit. From a silent video Spark invents a request ("remove
   // the lamp, make the cat bigger"), and Voice Transcribe hears "Yeah".
-  if (!prior?.edits && (!pcm?.length || maxVolumeDb(pcm) < -40)) throw new Error('no speech');
+  if (!prior?.edits && (!pcm?.length || maxVolumeDb(pcm) < -40)) {
+    live?.close();
+    throw new Error('no speech');
+  }
   // The realtime transcript (streamed while talking) if it arrives, else batch.
   const keywords = keywordsFor([img, ...refs.marks.map((m) => m.ref), ...refs.pinned]);
   const batch = () => T('transcribe', () => transcribe(wav!, trace, keywords)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null));
@@ -401,6 +410,8 @@ export type JobBody = {
 export const runtime = {
   async uploadImage(input: string | Blob) {
     const blob = typeof input === 'string' ? await (await fetch(input)).blob() : input;
+    // It is scaled to ≤2048 px anyway; this keeps a huge file from filling the tab's memory.
+    if (blob.size > MAX_UPLOAD_BYTES) throw new Error(`that picture is over ${MAX_UPLOAD_BYTES / 1e6} MB`);
     const img = await storeImage(blob);
     return { imageId: img.id, width: img.width, height: img.height };
   },

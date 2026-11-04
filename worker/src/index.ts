@@ -1,7 +1,8 @@
 // This & That API proxy. The browser does all the work; this Worker only adds
-// the Meta API key (which must never reach the browser), checks the demo
-// passcode, and caps spend. It streams bodies straight through and keeps no
-// state besides the usage counters in the Limiter Durable Object.
+// the Meta API key (which must never reach the browser), checks the optional
+// demo passcode, checks inputs against fixed limits, and counts usage against
+// two global daily caps. Responses stream straight through. The only state is
+// the counters in the Limiter Durable Object.
 
 import { DurableObject } from 'cloudflare:workers';
 
@@ -9,32 +10,39 @@ export interface Env {
   MODEL_API_KEY?: string;
   DEMO_PASSCODE?: string;
   ALLOWED_ORIGINS?: string;
-  IP_DAILY_UNITS?: string | number;
-  GLOBAL_DAILY_UNITS?: string | number;
-  IP_PER_MINUTE?: string | number;
+  JOBS_PER_DAY?: string | number;
+  REQUESTS_PER_DAY?: string | number;
+  MAX_MARKS?: string | number;
+  MAX_RECORDING_SECONDS?: string | number;
+  MAX_IMAGE_SIDE?: string | number;
   ASR_SESSION_SECONDS?: string | number;
   LIMITER: DurableObjectNamespace<Limiter>;
 }
 
 const UPSTREAM = 'https://api.meta.ai/v1';
 const PREFIX = '/api/meta/';
-const MAX_BODY = 30 * 1024 * 1024;
+const MB = 1024 * 1024;
 
-// Allowed upstream paths and the units each request costs.
-const ROUTES: Record<string, number> = {
-  'chat/completions': 1,
-  responses: 1,
-  'images/edits': 10,
-  'images/generations': 10,
-  'asr/transcribe': 1,
+type Body = Record<string, unknown>;
+type Route = {
+  maxBytes: number;
+  models?: string[]; // set = the body must be JSON with one of these models
+  check?: (body: Body, env: Env) => string | null; // extra field checks: an error sentence, or null
+};
+
+// The only upstream paths allowed, with their input limits.
+const ROUTES: Record<string, Route> = {
+  'chat/completions': { maxBytes: 8 * MB, models: ['muse-spark-1.2', 'muse-spark-1.3'] },
+  responses: { maxBytes: 3 * MB, models: ['sam-3.1'] },
+  'images/edits': { maxBytes: 20 * MB, models: ['muse-image-1.0'], check: checkImageEdit },
+  'asr/transcribe': { maxBytes: 1.5 * MB }, // multipart (request JSON + WAV): size only
 };
 const REALTIME = 'asr/realtime';
-const REALTIME_UNITS = 1;
+const MAX_PCM_BYTES = 960_000; // 30 s of 16 kHz mono s16
+const JOB_KINDS = ['edit', 'whole', 'build', 'paint'];
+const QUOTA = { error: 'quota', message: "Today's free quota is used up. It resets at 09:00 KST (00:00 UTC)." };
 
-type Caps = { ipDaily: number; globalDaily: number; ipPerMinute: number };
-type Verdict =
-  | { ok: true }
-  | { ok: false; scope: 'minute' | 'ip' | 'global'; cap: number; retryAfter: number };
+type Counter = 'jobs' | 'requests';
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
@@ -58,59 +66,97 @@ export default {
 
     if (!url.pathname.startsWith(PREFIX)) return notFound(cors);
     const path = url.pathname.slice(PREFIX.length);
-    const isCheck = path === 'check';
-    const isRealtime = path === REALTIME;
-    if (!isCheck && !isRealtime && !Object.hasOwn(ROUTES, path)) return notFound(cors);
 
-    // Fail closed when the Worker isn't configured.
-    if (!env.DEMO_PASSCODE) {
-      return json(503, { error: 'config', message: 'DEMO_PASSCODE is not set on the Worker.' }, cors);
+    // Public: what the app needs to know before it asks for anything.
+    if (path === 'config') {
+      if (request.method !== 'GET') return methodNotAllowed(cors);
+      const cap = num(env.JOBS_PER_DAY, 500);
+      let used: number | null = null;
+      try {
+        used = await limiter(env).used('jobs');
+      } catch {} // the counts are informational here; the rest of config still helps the app
+      return json(200, {
+        passcode: Boolean(env.DEMO_PASSCODE),
+        limits: {
+          maxMarks: num(env.MAX_MARKS, 6),
+          maxRecordingSeconds: num(env.MAX_RECORDING_SECONDS, 20),
+          maxImageSide: num(env.MAX_IMAGE_SIDE, 2048),
+        },
+        ...(used === null ? {} : { jobs: { used, cap } }),
+      }, cors);
     }
-    if (!env.MODEL_API_KEY && !isCheck) {
-      return json(503, { error: 'config', message: 'MODEL_API_KEY is not set on the Worker.' }, cors);
-    }
+
+    const isRealtime = path === REALTIME;
+    const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : null;
+    if (path !== 'check' && path !== 'job' && !isRealtime && !route) return notFound(cors);
 
     const pass = await checkPasscode(request, env.DEMO_PASSCODE);
     if (!pass.ok) return json(401, { error: 'passcode', message: 'Enter the demo passcode.' }, cors);
 
-    if (isCheck) {
+    if (path === 'check') {
       if (request.method !== 'GET') return methodNotAllowed(cors);
       return json(200, { ok: true }, cors);
     }
 
-    const ip = request.headers.get('CF-Connecting-IP') ?? 'local';
+    // One take (2D edit, whole-picture edit, 3D build, paint) = one job.
+    if (path === 'job') {
+      if (request.method !== 'POST') return methodNotAllowed(cors);
+      const bytes = await readBody(request, 4096);
+      const body = bytes && parseJson(bytes);
+      const kind = body ? body.kind : undefined;
+      if (typeof kind !== 'string' || !JOB_KINDS.includes(kind)) {
+        return inputError(400, `kind must be one of ${JOB_KINDS.join(', ')}.`, cors);
+      }
+      const cap = num(env.JOBS_PER_DAY, 500);
+      const counted = await count(env, 'jobs', cap, cors);
+      if (counted instanceof Response) return counted;
+      return json(200, { ok: true, used: counted, cap }, cors);
+    }
+
+    if (!env.MODEL_API_KEY) {
+      return json(503, { error: 'config', message: 'MODEL_API_KEY is not set on the Worker.' }, cors);
+    }
 
     if (isRealtime) {
       if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
         return json(426, { error: 'upgrade', message: 'This endpoint needs a WebSocket upgrade.' }, cors);
       }
-      const limited = await limit(env, ip, REALTIME_UNITS, cors);
-      if (limited) return limited;
-      // A client that offered a ttpass.* subprotocol fails the handshake unless
-      // one is echoed, even when the header or cookie is what let it in.
-      return relayRealtime(env, ctx, pass.protocol ?? offeredProtocol(request), cors);
+      const counted = await count(env, 'requests', num(env.REQUESTS_PER_DAY, 10000), cors);
+      if (counted instanceof Response) return counted;
+      return relayRealtime(env, ctx, pass.protocol, cors);
     }
 
-    if (request.method !== 'GET' && request.method !== 'POST') return methodNotAllowed(cors);
+    // ---- an upstream HTTP call ----
+    const r = route!;
+    if (request.method !== 'POST') return methodNotAllowed(cors);
+    const tooLarge = () => inputError(413, `The request body is over the ${r.maxBytes / MB} MB limit for ${path}.`, cors);
     const length = request.headers.get('Content-Length');
-    if (length !== null && Number(length) > MAX_BODY) {
-      return json(413, { error: 'too_large', message: 'Request body is over 30 MB.' }, cors);
+    if (length !== null && Number(length) > r.maxBytes) return tooLarge();
+    const bytes = await readBody(request, r.maxBytes);
+    if (!bytes) return tooLarge();
+
+    if (r.models) {
+      const body = parseJson(bytes);
+      if (!body) return inputError(400, 'The request body must be a JSON object.', cors);
+      if (typeof body.model !== 'string' || !r.models.includes(body.model)) {
+        return inputError(400, `The model must be ${r.models.join(' or ')} on ${path}.`, cors);
+      }
+      const problem = r.check?.(body, env);
+      if (problem) return inputError(400, problem, cors);
     }
 
-    const limited = await limit(env, ip, ROUTES[path], cors);
-    if (limited) return limited;
+    const counted = await count(env, 'requests', num(env.REQUESTS_PER_DAY, 10000), cors);
+    if (counted instanceof Response) return counted;
 
     const headers = new Headers({ Authorization: `Bearer ${env.MODEL_API_KEY}` });
     for (const name of ['Content-Type', 'Accept']) {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    let body: ReadableStream | null = request.body;
-    if (body && length === null) body = body.pipeThrough(capStream(MAX_BODY));
-
     let upstream: Response;
     try {
-      upstream = await fetch(`${UPSTREAM}/${path}${url.search}`, { method: request.method, headers, body });
+      // The same bytes the client sent.
+      upstream = await fetch(`${UPSTREAM}/${path}${url.search}`, { method: 'POST', headers, body: bytes });
     } catch (e) {
       return json(502, { error: 'upstream', message: `Could not reach the Meta API (${(e as Error).message}).` }, cors);
     }
@@ -119,9 +165,65 @@ export default {
       const value = upstream.headers.get(name);
       if (value) out.set(name, value);
     }
+    // Streamed through, not buffered (SSE for Spark and SAM).
     return new Response(upstream.body, { status: upstream.status, headers: out });
   },
 } satisfies ExportedHandler<Env>;
+
+// ---------- input checks ----------
+
+function checkImageEdit(body: Body, env: Env): string | null {
+  if (body.n !== undefined && body.n !== 1) return 'Only one image per edit: n must be 1.';
+  const max = num(env.MAX_IMAGE_SIDE, 2048);
+  const size = typeof body.size === 'string' ? /^(\d+)x(\d+)$/.exec(body.size) : null;
+  if (!size || Number(size[1]) > max || Number(size[2]) > max || Number(size[1]) < 1 || Number(size[2]) < 1) {
+    return `size must be "WxH" with both sides at most ${max} pixels.`;
+  }
+  if (body.images !== undefined && (!Array.isArray(body.images) || body.images.length > 10)) {
+    return 'images must be a list of at most 10 pictures.';
+  }
+  return null;
+}
+
+// The body, or null once it passes `max` bytes (checked while reading, so a
+// body without Content-Length can't get past the limit either).
+async function readBody(request: Request, max: number): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value as Uint8Array;
+    size += chunk.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function parseJson(bytes: Uint8Array): Body | null {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Body) : null;
+  } catch {
+    return null;
+  }
+}
+
+function inputError(status: 400 | 413, message: string, cors: Headers): Response {
+  return json(status, { error: 'input', message }, cors);
+}
 
 // ---------- CORS ----------
 
@@ -137,29 +239,29 @@ function originAllowed(origin: string, list = ''): boolean {
   });
 }
 
-// ---------- passcode ----------
+// ---------- passcode (optional) ----------
 
-async function checkPasscode(request: Request, secret: string): Promise<{ ok: boolean; protocol: string | null }> {
+// No DEMO_PASSCODE set = open. Otherwise the passcode may come as the
+// x-demo-passcode header, the tt_pass cookie, or (browsers can't set headers
+// on a WebSocket) a subprotocol entry ttpass.<base64url(utf8), no padding>.
+// An offered ttpass.* protocol is always echoed, or the browser drops the socket.
+async function checkPasscode(request: Request, secret?: string): Promise<{ ok: boolean; protocol: string | null }> {
+  const offered = (request.headers.get('Sec-WebSocket-Protocol') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.startsWith('ttpass.'));
+  const protocol = offered[0] ?? null;
+  if (!secret) return { ok: true, protocol };
+
   const header = request.headers.get('x-demo-passcode');
-  if (header !== null && (await sameSecret(header, secret))) return { ok: true, protocol: null };
-
+  if (header !== null && (await sameSecret(header, secret))) return { ok: true, protocol };
   const cookie = readCookie(request.headers.get('Cookie'), 'tt_pass');
-  if (cookie !== null && (await sameSecret(cookie, secret))) return { ok: true, protocol: null };
-
-  // Browsers can't set headers on a WebSocket, so the passcode rides in a
-  // subprotocol entry: ttpass.<base64url(utf8 passcode), no padding>.
-  for (const entry of (request.headers.get('Sec-WebSocket-Protocol') ?? '').split(',')) {
-    const protocol = entry.trim();
-    if (!protocol.startsWith('ttpass.')) continue;
-    const value = fromBase64Url(protocol.slice('ttpass.'.length));
-    if (value !== null && (await sameSecret(value, secret))) return { ok: true, protocol };
+  if (cookie !== null && (await sameSecret(cookie, secret))) return { ok: true, protocol };
+  for (const entry of offered) {
+    const value = fromBase64Url(entry.slice('ttpass.'.length));
+    if (value !== null && (await sameSecret(value, secret))) return { ok: true, protocol: entry };
   }
-  return { ok: false, protocol: null };
-}
-
-function offeredProtocol(request: Request): string | null {
-  const entry = (request.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map((e) => e.trim()).find((e) => e.startsWith('ttpass.'));
-  return entry ?? null;
+  return { ok: false, protocol };
 }
 
 async function sameSecret(a: string, b: string): Promise<boolean> {
@@ -196,46 +298,33 @@ function fromBase64Url(s: string): string | null {
   }
 }
 
-// ---------- limits ----------
-
-function capsFrom(env: Env): Caps {
-  return {
-    ipDaily: num(env.IP_DAILY_UNITS, 600),
-    globalDaily: num(env.GLOBAL_DAILY_UNITS, 6000),
-    ipPerMinute: num(env.IP_PER_MINUTE, 60),
-  };
-}
+// ---------- daily caps ----------
 
 function num(value: string | number | undefined, fallback: number): number {
   const n = Number(value);
   return value === undefined || value === '' || !Number.isFinite(n) ? fallback : n;
 }
 
-// null when the request may go ahead (its units are already counted), else the 429/503 to return.
-async function limit(env: Env, ip: string, units: number, cors: Headers): Promise<Response | null> {
-  let verdict: Verdict;
+const limiter = (env: Env) => env.LIMITER.get(env.LIMITER.idFromName('global'));
+
+// Today's count after this one, or the 429/503 to return.
+async function count(env: Env, counter: Counter, cap: number, cors: Headers): Promise<number | Response> {
+  let result: { ok: boolean; used: number };
   try {
-    verdict = await env.LIMITER.get(env.LIMITER.idFromName('global')).take(ip, units, capsFrom(env));
+    result = await limiter(env).take(counter, cap);
   } catch (e) {
-    return json(503, { error: 'limiter', message: `Usage limiter unavailable (${(e as Error).message}).` }, cors);
+    return json(503, { error: 'limiter', message: `Usage counter unavailable (${(e as Error).message}).` }, cors);
   }
-  if (verdict.ok) return null;
-  const message =
-    verdict.scope === 'minute'
-      ? `Too many requests from your network (${verdict.cap} per minute). Try again in ${verdict.retryAfter} seconds.`
-      : verdict.scope === 'ip'
-        ? `Daily demo limit reached for your network (${verdict.cap} units). It resets at 00:00 UTC.`
-        : `The demo's daily limit for everyone has been reached (${verdict.cap} units). It resets at 00:00 UTC.`;
-  return json(429, { error: 'limit', message }, cors, { 'Retry-After': String(verdict.retryAfter) });
+  if (result.ok) return result.used;
+  const toMidnight = Math.ceil((86_400_000 - (Date.now() % 86_400_000)) / 1000); // UTC days are 86400 s in epoch time
+  return json(429, QUOTA, cors, { 'Retry-After': String(toMidnight) });
 }
 
-// One global instance (idFromName('global')). Rows: (bucket, key) -> n, where
-// bucket is `d:<UTC day>` (units per IP and `*` for everyone) or `m:<epoch
-// minute>` (requests per IP). take() is synchronous inside the object, so the
-// check and the increment are atomic.
+// One global instance (idFromName('global')) holding per-UTC-day counters:
+// rows (bucket = 'd:<YYYY-MM-DD>', key = 'jobs' | 'requests') -> n. take() is
+// synchronous inside the object, so the check and the increment are atomic.
 export class Limiter extends DurableObject<Env> {
   private day = '';
-  private minute = '';
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -244,44 +333,36 @@ export class Limiter extends DurableObject<Env> {
     );
   }
 
-  take(ip: string, units: number, caps: Caps): Verdict {
-    const sql = this.ctx.storage.sql;
-    const now = Date.now();
-    const day = `d:${new Date(now).toISOString().slice(0, 10)}`;
-    const minute = `m:${Math.floor(now / 60_000)}`;
-    // Purge old windows when the window changes (keeps the table tiny).
+  used(counter: Counter): number {
+    return this.get(this.today(), counter);
+  }
+
+  take(counter: Counter, cap: number): { ok: boolean; used: number } {
+    const day = this.today();
+    const used = this.get(day, counter);
+    if (used + 1 > cap) return { ok: false, used };
+    this.ctx.storage.sql.exec(
+      'INSERT INTO usage (bucket, key, n) VALUES (?, ?, 1) ON CONFLICT (bucket, key) DO UPDATE SET n = n + 1',
+      day,
+      counter,
+    );
+    return { ok: true, used: used + 1 };
+  }
+
+  // Today's bucket; rows from earlier days are dropped when the day changes.
+  private today(): string {
+    const day = `d:${new Date().toISOString().slice(0, 10)}`;
     if (day !== this.day) {
-      sql.exec("DELETE FROM usage WHERE bucket LIKE 'd:%' AND bucket <> ?", day);
+      this.ctx.storage.sql.exec('DELETE FROM usage WHERE bucket <> ?', day);
       this.day = day;
     }
-    if (minute !== this.minute) {
-      sql.exec("DELETE FROM usage WHERE bucket LIKE 'm:%' AND bucket <> ?", minute);
-      this.minute = minute;
-    }
-    const get = (bucket: string, key: string) =>
-      sql.exec<{ n: number }>('SELECT n FROM usage WHERE bucket = ? AND key = ?', bucket, key).toArray()[0]?.n ?? 0;
-    const ipKey = `ip:${ip}`;
-    const toMidnight = Math.ceil((86_400_000 - (now % 86_400_000)) / 1000); // UTC days are 86400 s in epoch time
+    return day;
+  }
 
-    if (get(minute, ipKey) + 1 > caps.ipPerMinute) {
-      return { ok: false, scope: 'minute', cap: caps.ipPerMinute, retryAfter: Math.ceil((60_000 - (now % 60_000)) / 1000) };
-    }
-    if (get(day, ipKey) + units > caps.ipDaily) return { ok: false, scope: 'ip', cap: caps.ipDaily, retryAfter: toMidnight };
-    if (get(day, '*') + units > caps.globalDaily) {
-      return { ok: false, scope: 'global', cap: caps.globalDaily, retryAfter: toMidnight };
-    }
-
-    const add = (bucket: string, key: string, n: number) =>
-      sql.exec(
-        'INSERT INTO usage (bucket, key, n) VALUES (?, ?, ?) ON CONFLICT (bucket, key) DO UPDATE SET n = n + excluded.n',
-        bucket,
-        key,
-        n,
-      );
-    add(minute, ipKey, 1);
-    add(day, ipKey, units);
-    add(day, '*', units);
-    return { ok: true };
+  private get(day: string, counter: Counter): number {
+    return (
+      this.ctx.storage.sql.exec<{ n: number }>('SELECT n FROM usage WHERE bucket = ? AND key = ?', day, counter).toArray()[0]?.n ?? 0
+    );
   }
 }
 
@@ -290,6 +371,8 @@ export class Limiter extends DurableObject<Env> {
 // The client gets its socket at once; the upstream opens in the background and
 // client messages queue (in order) until it does. The first client text
 // message is the session config without credentials: the key is added here.
+// A session ends with 1000 "recording too long" after ASR_SESSION_SECONDS or
+// past MAX_PCM_BYTES of audio, since audio is billed by the second.
 function relayRealtime(env: Env, ctx: ExecutionContext, protocol: string | null, cors: Headers): Response {
   const { 0: client, 1: server } = new WebSocketPair();
   // Recent compatibility dates default binaryType to 'blob' (the web standard);
@@ -300,6 +383,7 @@ function relayRealtime(env: Env, ctx: ExecutionContext, protocol: string | null,
   let upstream: WebSocket | null = null;
   let configured = false;
   let closed = false;
+  let pcmBytes = 0;
   const queue: (string | ArrayBuffer)[] = [];
 
   const finish = (code: number, reason: string) => {
@@ -309,11 +393,7 @@ function relayRealtime(env: Env, ctx: ExecutionContext, protocol: string | null,
     shut(server, code, reason);
     if (upstream) shut(upstream, code, reason);
   };
-  // A hard ceiling on one session's length, since audio is billed by the second.
-  const timer = setTimeout(
-    () => finish(1000, 'Session time limit reached.'),
-    num(env.ASR_SESSION_SECONDS, 300) * 1000,
-  );
+  const timer = setTimeout(() => finish(1000, 'recording too long'), num(env.ASR_SESSION_SECONDS, 30) * 1000);
 
   const forward = (data: string | ArrayBuffer) => {
     if (!configured) {
@@ -337,6 +417,10 @@ function relayRealtime(env: Env, ctx: ExecutionContext, protocol: string | null,
 
   server.addEventListener('message', (ev) => {
     if (closed) return;
+    if (typeof ev.data !== 'string') {
+      pcmBytes += ev.data.byteLength;
+      if (pcmBytes > MAX_PCM_BYTES) return finish(1000, 'recording too long');
+    }
     if (upstream) forward(ev.data);
     else queue.push(ev.data);
   });
@@ -397,18 +481,6 @@ function truncate(s: string, maxBytes: number): string {
 }
 
 // ---------- helpers ----------
-
-// For bodies without Content-Length: error the stream past `max` bytes.
-function capStream(max: number): TransformStream<Uint8Array, Uint8Array> {
-  let seen = 0;
-  return new TransformStream({
-    transform(chunk, controller) {
-      seen += chunk.byteLength;
-      if (seen > max) controller.error(new Error('Request body is over 30 MB.'));
-      else controller.enqueue(chunk);
-    },
-  });
-}
 
 function json(status: number, body: unknown, cors: Headers, extra: Record<string, string> = {}): Response {
   const headers = new Headers(cors);

@@ -31,7 +31,7 @@ let passcode = (() => {
   }
 })();
 const passListeners = new Set<() => void>();
-const limitListeners = new Set<(message: string) => void>();
+const limitListeners = new Set<(e: { error: string; message: string }) => void>();
 
 export const getPasscode = () => passcode;
 export function setPasscode(p: string) {
@@ -46,8 +46,9 @@ export function onPasscodeNeeded(f: () => void) {
   return () => void passListeners.delete(f);
 }
 
-// The app shows the Worker's words when a demo limit is reached (429).
-export function onLimit(f: (message: string) => void) {
+// The app shows the Worker's words when a limit is reached (429; error
+// 'quota' when today's free jobs are used up).
+export function onLimit(f: (e: { error: string; message: string }) => void) {
   limitListeners.add(f);
   return () => void limitListeners.delete(f);
 }
@@ -66,10 +67,27 @@ export async function metaFetch(path: string, init: RequestInit = {}) {
   if (res.status === 401 || res.status === 429 || res.status === 503) {
     const j: any = await res.json().catch(() => ({}));
     if (res.status === 401) passListeners.forEach((f) => f());
-    if (res.status === 429) limitListeners.forEach((f) => f(j.message ?? 'Demo limit reached.'));
+    if (res.status === 429) limitListeners.forEach((f) => f({ error: j.error ?? 'limit', message: j.message ?? 'Limit reached.' }));
     throw new ProxyError(j.message ?? (res.status === 401 ? 'Enter the demo passcode.' : `HTTP ${res.status}`), res.status);
   }
   return res;
+}
+
+// What the Worker allows: whether a passcode is needed, the input limits the
+// app keeps to, and today's job count. Defaults if it can't be reached.
+export type Config = { passcode: boolean; limits: { maxMarks: number; maxRecordingSeconds: number; maxImageSide: number }; jobs?: { used: number; cap: number } };
+const DEFAULT_CONFIG: Config = { passcode: false, limits: { maxMarks: 6, maxRecordingSeconds: 20, maxImageSide: 2048 } };
+let config: Config = DEFAULT_CONFIG;
+export const configLoaded = fetch(`${API}/config`)
+  .then((r) => (r.ok ? r.json() : DEFAULT_CONFIG))
+  .then((c: Config) => (config = { ...DEFAULT_CONFIG, ...c, limits: { ...DEFAULT_CONFIG.limits, ...c.limits } }), () => config);
+export const limits = () => config.limits;
+
+// One take (an edit, a 3D build, a paint) counts against the free daily jobs.
+// Throws a ProxyError when today's quota is used up.
+export async function countJob(kind: 'edit' | 'whole' | 'build' | 'paint') {
+  const res = await metaFetch('job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) });
+  if (!res.ok) throw new Error(`job: HTTP ${res.status}`);
 }
 
 // Is the stored passcode right? (The prompt asks before anything is sent.)

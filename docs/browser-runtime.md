@@ -16,6 +16,8 @@ On the `browser-runtime` branch the whole app runs in the browser: the static bu
 
 The mic is captured once as 16 kHz PCM (`editor/live-asr.ts`): it streams to realtime transcription, and the same samples are the voice track of Spark's video and the batch fallback's WAV. The UI is unchanged except for one shadcn Dialog that asks for the demo passcode (`components/passcode-gate.tsx`) and a toast when a demo limit is reached.
 
+Limits the app keeps to (the Worker reports them at `GET /api/meta/config` and checks what it can see itself, see [deploy-cloudflare.md](deploy-cloudflare.md)): at most 6 marks per edit (one per mark colour), a take of at most 20 s (it is sent when the time is up), pictures up to 40 MB / 60 MP (scaled to ≤2048 px before anything is sent). Each take (an edit, a typed whole-picture edit, a 3D build, a paint) is counted once at `POST /api/meta/job` against the free daily jobs; when they are used up the take doesn't start and a toast says "Today's free quota is used up". A small info button beside the name opens the privacy note.
+
 `server/` is kept unchanged as the fallback (Cloudflare Tunnel to `npm start` on the `master` checkout).
 
 ## How Spark sees the drawing
@@ -46,6 +48,8 @@ Same clips, same machine, run back to back (`m0/bench.ts` against the Node serve
 Model time dominates and varies more between runs than the two versions differ (Muse Image 10–28 s, Spark 1.9–8.3 s); the instant clips are nearly all Spark time. The proxy itself adds nothing measurable: the same small chat completion took 1.6–2.6 s direct and 1.3–2.5 s through the Worker. Through the real UI (fake mic, synthetic strokes): 13.2 s for clip b in development and 14.3 s for clip a from the production build served cross-origin against the Worker (speculation on, as in the app).
 
 3D mode: the scripted chair builds in 15.1 s (6 parts, Spark 6.4 s, first part 5.3 s; the server version took 14–17 s); "양쪽에 팔걸이 달아 줘" by voice adds both armrests 5.0 s after release; painting with Muse Image 8.8 s.
+
+Public build (Worker v2: optional passcode, daily job cap, input limits): bench a–f 6/6 again (a 21.4, b 19.4, c 19.5, d 4.8, e 20.1, f 6.2 s); with no passcode the app opens straight to "Try a sample" and an edit counts exactly one job; with the job cap reached a take is refused at once with "Today's free quota is used up"; with a passcode set, the production build asks once, remembers it, and an edit runs cross-origin in 14.8 s. Main thread: the longest blocking task per job is 130–330 ms on this Mac (local edits and paste-back at full size).
 
 Also checked: references (rose brooch reference → brooch redesigned, 31 s, Muse 23.8 s), a Shape sketch (pauldron spikes, kind `sketch`), Keep → next version, the passcode prompt (wrong passcode refused), a 429 shown as "Demo limit reached · Too many requests from your network (3 per minute). Try again in 45 seconds."
 

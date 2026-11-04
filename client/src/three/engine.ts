@@ -12,6 +12,7 @@ import { Voice } from './voice';
 import { applyPaint, renderModel } from './paint';
 import { penStroke, screenOf } from './replay';
 import { paintModel, perceive } from '../runtime/perceive';
+import { countJob, limits, ProxyError } from '../runtime/meta';
 import { put } from '../runtime/store';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
@@ -153,6 +154,9 @@ class Engine3D {
     if (this.voice.recording || this.busy) return;
     this.set({ recording: true, caption: '' });
     this.status('Listening · draw while you talk');
+    // A take is at most maxRecordingSeconds long.
+    clearTimeout(this.talkTimer);
+    this.talkTimer = window.setTimeout(() => this.voice.recording && ((this.toggled = false), this.stopTalk('')), limits().maxRecordingSeconds * 1000);
     try {
       await this.voice.start();
     } catch (e) {
@@ -161,7 +165,10 @@ class Engine3D {
     }
   }
 
+  private talkTimer: number | undefined;
+
   async stopTalk(typed: string) {
+    clearTimeout(this.talkTimer);
     if (!this.voice.recording) return;
     this.set({ recording: false });
     this.status('Transcribing', true);
@@ -214,6 +221,9 @@ class Engine3D {
     stage.controls.autoRotate = false;
     this.status('Muse Image is painting the model from this view', true);
     try {
+      await countJob('paint').catch((e) => {
+        if (e instanceof ProxyError) throw e;
+      });
       this.builder.finish();
       const { image, mask, cam } = renderModel(stage);
       const r = await paintModel(image, this.subject, style);
@@ -243,6 +253,15 @@ class Engine3D {
     const strokes = editing ? sketch.current() : sketch.strokes;
     if (!strokes.length && !(editing && transcript)) return this.status('Draw something first');
     this.busy = true;
+    // Each build counts against the free daily jobs.
+    try {
+      await countJob('build');
+    } catch (e) {
+      if (e instanceof ProxyError) {
+        this.busy = false;
+        return this.status(e.message);
+      }
+    }
     const before = builder.parts;
     this.status('Muse Spark is looking at the sketch from six sides', true);
     builder.finish();

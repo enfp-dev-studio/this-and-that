@@ -217,8 +217,12 @@ function findCodecs(w: number, h: number) {
   return codecs;
 }
 
+// Video with its voice track: without the audio (Safari before 26 has no
+// AudioEncoder) Spark can't tell when each word was said, and the key frames
+// with the transcript's word times do better.
 export async function canEncodeVideo() {
-  return !!(await findCodecs(768, 512)).video;
+  const { video, audio } = await findCodecs(768, 512);
+  return !!video && !!audio;
 }
 
 // The first encode of a page pays for probing the codecs and starting the
@@ -249,11 +253,16 @@ function resample(pcm: Int16Array, rate: number) {
 export async function renderVideo(image: Source, strokes: Stroke[], pcm: Int16Array | null, opts: { fps?: number; maxSide?: number; durationMs?: number } = {}) {
   const fps = opts.fps ?? 8;
   const scale = Math.min(1, (opts.maxSide ?? 768) / Math.max(image.width, image.height));
-  const w = Math.round((image.width * scale) / 2) * 2;
-  const h = Math.round((image.height * scale) / 2) * 2;
+  // Multiples of 16 (hardware H.264 encoders on Android can refuse others):
+  // the picture keeps its scale and loses at most 15 px at the right and bottom.
+  const w = Math.max(16, Math.floor((image.width * scale) / 16) * 16);
+  const h = Math.max(16, Math.floor((image.height * scale) / 16) * 16);
   const { video, audio } = await findCodecs(w, h);
   if (!video) throw new Error('this browser cannot encode video');
-  const base = drawn(image, w, h);
+  const base = canvas(w, h);
+  const bg = ctx2d(base);
+  bg.imageSmoothingQuality = 'high';
+  bg.drawImage(image, 0, 0, image.width * scale, image.height * scale);
   const frameCanvas = canvas(w, h);
   const g = ctx2d(frameCanvas);
   const lastT = Math.max(0, ...strokes.flatMap((s) => s.points.map((p) => p.t)));

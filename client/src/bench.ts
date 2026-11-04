@@ -38,6 +38,11 @@ const log = (s: string) => {
   console.log(s);
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+// Main-thread blocking during each job (what would stall the sheen and the pen).
+let longTasks: number[] = [];
+try {
+  new PerformanceObserver((l) => l.getEntries().forEach((e) => longTasks.push(Math.round(e.duration)))).observe({ type: 'longtask', buffered: false });
+} catch {}
 const results: unknown[] = [];
 (window as any).__bench = { results, done: false };
 
@@ -60,6 +65,7 @@ async function replay(imageId: string, strokes: Stroke[], wav: ArrayBuffer) {
   });
   await sleep(audioMs + 300 - (performance.now() - t0));
   const released = performance.now();
+  longTasks = [];
   await Promise.all([...markCalls, streamed]);
   const { id } = runtime.startJob({ imageId, strokes: marks, pcm, asr, opts });
   let editsAt = 0, previewAt = 0;
@@ -85,6 +91,7 @@ for (let run = 1; run <= runs; run++) for (const name of clips) {
     const ok = right.every(Boolean);
     log(`\n${name} run ${run}: release→result ${r.total} ms, edits shown ${r.editsAt} ms, instant preview ${r.previewAt || '-'} ms, local ${JSON.stringify(r.job.localMarks ?? [])}, asr ${r.job.asrVia}, via ${r.job.via}, speculation ${r.job.speculation ?? '-'}, mapping ${ok ? 'RIGHT' : 'WRONG ' + JSON.stringify(right)}`);
     log(`  transcript: ${r.job.transcript}`);
+    log(`  main thread: ${longTasks.length} long tasks, longest ${Math.max(0, ...longTasks)} ms, total ${longTasks.reduce((a, b) => a + b, 0)} ms`);
     for (const s of [...t.spans].sort((a: any, b: any) => a.start - b.start)) log(`  ${s.name.padEnd(26)} @${String(s.start).padStart(6)} +${s.ms}`);
     for (const u of t.usage) if (/spark|image/.test(u.name)) log(`  usage ${u.name}: ${JSON.stringify(u.usage)}`);
     for (const e of r.job.edits ?? []) log(`  ${e.mark}. ${e.target} → ${e.instruction}${e.op ? ` [${e.op} ${e.color || ''} ${e.amount ?? ''}]` : ''}`);

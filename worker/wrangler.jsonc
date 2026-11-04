@@ -1,7 +1,9 @@
 // This & That API proxy (see docs/deploy-cloudflare.md).
-// Secrets (not here): MODEL_API_KEY, DEMO_PASSCODE
+// Secrets (not here):
+//   MODEL_API_KEY  required
+//   DEMO_PASSCODE  optional; unset or empty = open to everyone
 //   production: npx wrangler secret put <NAME> --config worker/wrangler.jsonc
-//   local dev:  worker/.dev.vars (git-ignored)
+//   local dev:  worker/.dev.vars (git-ignored), or --var DEMO_PASSCODE:<value>
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "this-and-that-api",
@@ -10,6 +12,7 @@
   "workers_dev": true,
   "observability": { "enabled": true },
 
+  // Global daily counters (jobs, requests) in one SQLite-backed Durable Object.
   "durable_objects": {
     "bindings": [{ "name": "LIMITER", "class_name": "Limiter" }]
   },
@@ -17,17 +20,19 @@
 
   "vars": {
     // Comma-separated. One `*` may stand for a subdomain label (Pages preview deploys).
-    // The localhost entries are for local dev (Vite on :5191); they are harmless in
-    // production because every request still needs the passcode.
+    // The localhost entries are for local dev (Vite on :5191).
     "ALLOWED_ORIGINS": "https://this-and-that.pages.dev,https://*.this-and-that.pages.dev,http://localhost:5191,http://127.0.0.1:5191",
-    // Units per UTC day: images/* = 10, chat/completions, responses, asr/transcribe = 1,
-    // one realtime ASR session = 1.
-    "IP_DAILY_UNITS": "600",
-    "GLOBAL_DAILY_UNITS": "6000",
-    // Requests per minute per IP (burst cap).
-    "IP_PER_MINUTE": "60",
+    // Takes (2D edit, whole edit, 3D build, paint) per UTC day, for everyone together.
+    "JOBS_PER_DAY": "500",
+    // Backstop: model requests + realtime sessions per UTC day, for everyone together.
+    "REQUESTS_PER_DAY": "10000",
+    // Reported to the app in /api/meta/config; the app enforces them.
+    "MAX_MARKS": "6",
+    "MAX_RECORDING_SECONDS": "20",
+    // Enforced here on images/edits `size`, and reported in config.
+    "MAX_IMAGE_SIDE": "2048",
     // Longest realtime ASR session before the Worker closes it.
-    "ASR_SESSION_SECONDS": "300"
+    "ASR_SESSION_SECONDS": "30"
   },
 
   "dev": { "port": 8801 }

@@ -5,6 +5,7 @@
 // the canvas.
 
 import { runtime, type JobBody } from '../runtime';
+import { countJob, limits, ProxyError } from '../runtime/meta';
 import { put } from '../runtime/store';
 import { LiveAsr } from './live-asr';
 import { markColor, themeVar, themeLength, watchTheme } from './colors';
@@ -162,6 +163,8 @@ class Editor {
   private touches = new Map<number, { x: number; y: number }>(); // fingers, once a pen is in use
 
   private t0 = 0;
+  private counted: Promise<void> = Promise.resolve();
+  private recordTimer: number | undefined;
   private micStream: MediaStream | null = null;
   private live: LiveAsr | null = null;
   private pressedAt = 0;
@@ -571,6 +574,9 @@ class Editor {
     if (e.pointerType === 'touch' && this.snapshot.penOnly) return; // palm rejection once a stylus is in use
     surface.canvas!.setPointerCapture(e.pointerId);
     if (mode === 'idle') await this.startRecording();
+    if (this.snapshot.mode !== 'recording') return; // the take was refused (today's quota)
+    // One colour per mark: the models are told the colour names.
+    if (this.strokes.length >= limits().maxMarks) return this.onNotice(`Up to ${limits().maxMarks} marks per edit.`);
     // Marks are numbered across the picture and the reference, in drawing order.
     const stroke: Stroke = { mark: this.strokes.length + 1, points: [this.toImage(surface, e)] };
     if (surface.key === 'ref') stroke.on = this.snapshot.activeRef!;
@@ -847,6 +853,23 @@ class Editor {
     this.markInput();
     this.strokes = [];
     this.forgetSnap();
+    // Each take counts against the free daily jobs; when they are used up
+    // the recording stops and the app says so.
+    this.counted = countJob('edit');
+    this.counted.catch((e) => {
+      if (!(e instanceof ProxyError) || this.snapshot.mode !== 'recording') return;
+      this.cancelRecording();
+      this.strokes = [];
+      this.set({ marks: 0 });
+      this.draw();
+    });
+    clearTimeout(this.recordTimer);
+    const max = limits().maxRecordingSeconds;
+    this.recordTimer = window.setTimeout(() => {
+      if (this.snapshot.mode !== 'recording') return;
+      this.onNotice(`A take is at most ${max} s; sending it now.`);
+      this.stopAndSend();
+    }, max * 1000);
     this.set({ mode: 'recording', marks: 0, compare: false, ...this.emptyPanel() });
     this.t0 = performance.now();
     try {
@@ -866,16 +889,20 @@ class Editor {
   }
 
   private cancelRecording() {
+    clearTimeout(this.recordTimer);
     this.live?.cancel();
     this.live = null;
     this.set({ mode: 'idle' });
   }
 
   private async stopAndSend() {
+    clearTimeout(this.recordTimer);
     this.forgetSnap(); // what is sent is final
     const voice = this.live ? this.live.stop() : Promise.resolve(null);
     this.live = null;
     const speechMs = performance.now() - this.t0;
+    // Refused (today's quota): nothing is sent. Other failures to count don't hold the edit up.
+    if (await this.counted.then(() => false, (e) => e instanceof ProxyError)) return this.set({ mode: 'idle' });
     if (this.snapshot.experiment && this.snapshot.method === 'voice') {
       this.markSent({ chars: 0, speechMs, marks: 0 });
       const v = await voice;
@@ -957,6 +984,11 @@ class Editor {
   async submitText(text: string) {
     if (!this.target.image || !text.trim() || this.snapshot.mode === 'processing' || this.snapshot.mode === 'recording') return;
     if (this.snapshot.mode === 'review') await this.keep();
+    try {
+      await countJob('whole');
+    } catch (e) {
+      if (e instanceof ProxyError) return;
+    }
     this.markInput();
     this.markSent({ chars: text.trim().length, speechMs: 0, marks: 0 });
     this.strokes = [];
