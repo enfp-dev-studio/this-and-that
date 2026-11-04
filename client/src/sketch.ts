@@ -90,6 +90,15 @@ export class Sketch {
     stage.helpers.add(this.planeViz, this.dot);
 
     const el = stage.renderer.domElement;
+    // Palm rejection: a touch that lands while the pen is drawing or hovering
+    // (or just was) never reaches the orbit controls.
+    let penAt = -1e9;
+    const pen = (e: PointerEvent) => e.pointerType === 'pen' && (penAt = performance.now());
+    el.addEventListener('pointermove', pen, { capture: true });
+    el.addEventListener('pointerdown', (e) => {
+      pen(e);
+      if (e.pointerType === 'touch' && (this.drawing || performance.now() - penAt < 800)) e.stopImmediatePropagation();
+    }, { capture: true });
     el.addEventListener('pointerdown', (e) => this.down(e));
     el.addEventListener('pointermove', (e) => this.move(e));
     el.addEventListener('pointerup', (e) => this.up(e));
