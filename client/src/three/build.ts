@@ -10,7 +10,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 
 export type Part = {
   name: string;
-  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane';
+  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane' | 'lathe';
   center: number[];
   size: number[];
   rotation: number[];
@@ -20,7 +20,7 @@ export type Part = {
   profile: number;
   path?: number[][]; // tube: control points from its base (the center)
   radii?: number[]; // tube: [base, tip] radius
-  outline?: number[][]; // membrane: [x, y] outline from its root (the center)
+  outline?: number[][]; // membrane: [x, y] outline from its root (the center); lathe: [radius, y] half profile from its base
 };
 
 const FINISH: Record<string, { roughness: number; metalness: number }> = {
@@ -65,6 +65,12 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
       const path = (p.path ?? []).filter((q) => q.length === 3);
       if (path.length >= 2) return taperedTube(path, pos(p.radii?.[0] ?? sx / 2), pos(p.radii?.[1] ?? 0.004));
       return new THREE.ConeGeometry(sx / 2, sy, 10, 1);
+    }
+    case 'lathe': {
+      // The half profile turned about the part's vertical axis.
+      const profile = (p.outline ?? []).filter((q) => q.length === 2).map(([r, y]) => new THREE.Vector2(Math.max(0, r), y));
+      if (profile.length >= 2) return new THREE.LatheGeometry(profile, 32);
+      return new THREE.SphereGeometry(0.5, 12, 8).scale(sx, sy, sz);
     }
     case 'membrane': {
       const outline = (p.outline ?? []).filter((q) => q.length === 2);

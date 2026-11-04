@@ -332,7 +332,9 @@ class Engine3D {
     const box = new THREE.Box3().setFromPoints(s.points);
     const n = Math.min(8, s.points.length);
     const points = Array.from({ length: n }, (_, i) => s.points[Math.round((i * (s.points.length - 1)) / Math.max(1, n - 1))].toArray());
-    return { id: s.id, color: strokeColor(s.id), drawnFrom: s.viewDir.toArray(), plane: s.plane, bbox: { min: box.min.toArray(), max: box.max.toArray() }, points, closed: s.closed, ...(s.pen ? { pen: s.pen } : {}) };
+    // The whole stroke, 48 points evenly along it: drawn shapes are built from it (fit-parts.ts); Spark sees `points`.
+    const trace = resample(s.points, 48).map((p) => p.toArray().map((v) => Math.round(v * 1000) / 1000));
+    return { id: s.id, color: strokeColor(s.id), drawnFrom: s.viewDir.toArray(), plane: s.plane, bbox: { min: box.min.toArray(), max: box.max.toArray() }, points, trace, closed: s.closed, ...(s.pen ? { pen: s.pen } : {}) };
   }
 
   async perceive(transcript: string) {
@@ -505,6 +507,22 @@ class Engine3D {
     for (const pts of row(bottom)) await penStroke(stage, pts, 450, 7, { wobble: 3.5, holdMs: 550 });
     return this.sketch.strokes.map((s) => s.shape ?? 'as drawn');
   }
+}
+
+// n points evenly spaced along a polyline (by length).
+function resample(pts: THREE.Vector3[], n: number) {
+  if (pts.length < 2) return pts.slice();
+  const acc = [0];
+  for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + pts[i].distanceTo(pts[i - 1]));
+  const total = acc.at(-1)! || 1;
+  const out: THREE.Vector3[] = [];
+  for (let k = 0, j = 1; k < n; k++) {
+    const d = (total * k) / (n - 1);
+    while (j < pts.length - 1 && acc[j] < d) j++;
+    const u = (d - acc[j - 1]) / Math.max(1e-9, acc[j] - acc[j - 1]);
+    out.push(pts[j - 1].clone().lerp(pts[j], Math.min(1, Math.max(0, u))));
+  }
+  return out;
 }
 
 export const engine3d = new Engine3D();

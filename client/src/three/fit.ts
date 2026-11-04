@@ -26,7 +26,7 @@ function score(part: Part, rotation: number[], points: THREE.Vector3[]) {
 }
 
 export function fixRotation(part: Part, strokes: Map<number, Stroke>): Part {
-  if (part.primitive === 'extrude' || part.primitive === 'sphere' || part.primitive === 'tube' || part.primitive === 'membrane') return part;
+  if (['extrude', 'sphere', 'tube', 'membrane', 'lathe'].includes(part.primitive)) return part;
   const tilted = [0, 1, 2].filter((i) => Math.abs(part.rotation[i]) >= 3 && Math.abs(Math.abs(part.rotation[i]) - 90) > 3 && Math.abs(Math.abs(part.rotation[i]) - 180) > 3);
   if (!tilted.length) return part;
   const points = part.strokes.flatMap((id) => strokes.get(id)?.points ?? []);

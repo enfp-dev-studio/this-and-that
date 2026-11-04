@@ -12,7 +12,7 @@
 // and client/src/runtime/perceive.ts (the web app).
 
 type Vec = number[];
-export type FitStroke = { id: number; drawnFrom: Vec; plane: 'view' | 'ground' | 'surface'; bbox: { min: Vec; max: Vec }; points: Vec[] };
+export type FitStroke = { id: number; drawnFrom: Vec; plane: 'view' | 'ground' | 'surface'; bbox: { min: Vec; max: Vec }; points: Vec[]; trace?: Vec[]; pen?: string };
 export type FitPart = { name: string; primitive: string; center: Vec; size: Vec; rotation: Vec; strokes: number[]; path?: Vec[]; radii?: number[]; outline?: Vec[] };
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -31,6 +31,7 @@ function matrix([rx, ry, rz]: Vec) {
 // The points a tube or membrane is made of, in its own frame (null: a solid primitive).
 function shapePoints(p: FitPart): Vec[] | null {
   if (p.primitive === 'tube' && (p.path?.length ?? 0) >= 2) return p.path!;
+  if (p.primitive === 'lathe' && (p.outline?.length ?? 0) >= 2) return p.outline!.flatMap(([r, y]) => [[r, y, 0], [-r, y, 0], [0, y, r], [0, y, -r]]);
   if (p.primitive === 'membrane' && (p.outline?.length ?? 0) >= 3) return p.outline!.map(([x, y]) => [x, y, 0]);
   return null;
 }
@@ -46,6 +47,60 @@ const sub = (a: Vec, b: Vec) => a.map((x, i) => x - b[i]);
 const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: Vec, b: Vec) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const unit = (a: Vec) => a.map((x) => x / (Math.hypot(...a) || 1));
+
+// ---------- drawn shapes: the geometry from the stroke itself ----------
+
+const trace = (s: FitStroke) => (s.trace?.length ? s.trace : s.points);
+const lengthOf = (pts: Vec[]) => pts.slice(1).reduce((sum, q, i) => sum + Math.hypot(...sub(q, pts[i])), 0);
+
+// A stroke that draws a shape (the Shape pen, "like this" / "this shape", or a
+// real curve or outline) gives its part's geometry; a tap or a Point-pen mark only a place.
+const drawsShape = (s: FitStroke, said: string) => s.pen === 'shape' || (s.pen !== 'point' && (/\b(like this|this shape|like that)\b|이렇게|이 모양|이런 모양/.test(said) || lengthOf(trace(s)) >= 0.12));
+
+// n points evenly along a polyline, then a light 3-point smoothing (the ends kept).
+function resampled(pts: Vec[], n: number) {
+  const acc = [0];
+  for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + Math.hypot(...sub(pts[i], pts[i - 1])));
+  const total = acc.at(-1)! || 1;
+  const out: Vec[] = [];
+  for (let k = 0, j = 1; k < n; k++) {
+    const d = (total * k) / (n - 1);
+    while (j < pts.length - 1 && acc[j] < d) j++;
+    const u = Math.min(1, Math.max(0, (d - acc[j - 1]) / Math.max(1e-9, acc[j] - acc[j - 1])));
+    out.push(pts[j - 1].map((v, a) => v + (pts[j][a] - v) * u));
+  }
+  return out.map((q, i) => (i === 0 || i === out.length - 1 ? q : q.map((v, a) => (out[i - 1][a] + 2 * v + out[i + 1][a]) / 4)));
+}
+
+// A lathe body from a drawn silhouette (front or side): its half-width at each height, revolved.
+function latheFrom<P extends FitPart>(p: P, s: FitStroke): P | null {
+  const pts = resampled(trace(s), 64);
+  const d = s.drawnFrom.map(Math.abs);
+  const across = d[2] >= d[0] ? 0 : 2; // drawn from the front: x across; from the side: z across
+  const ys = pts.map((q) => q[1]);
+  const [yb, yt] = [Math.min(...ys), Math.max(...ys)];
+  const xs = pts.map((q) => q[across]);
+  const axis = (Math.min(...xs) + Math.max(...xs)) / 2;
+  if (yt - yb < 0.05 || Math.max(...xs) - Math.min(...xs) < 0.4 * (yt - yb)) return null; // a line, not a silhouette
+  const profile: Vec[] = [];
+  for (let k = 0; k <= 20; k++) {
+    const y = yb + ((yt - yb) * k) / 20;
+    // Where the outline crosses this height: the farthest crossing from the axis is the radius.
+    let r = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const [a, b] = [pts[i - 1], pts[i]];
+      if ((a[1] - y) * (b[1] - y) > 0 || a[1] === b[1]) continue;
+      const x = a[across] + ((b[across] - a[across]) * (y - a[1])) / (b[1] - a[1]);
+      r = Math.max(r, Math.abs(x - axis));
+    }
+    profile.push([r3(k === 20 ? 0 : r), r3(y - yb)]);
+  }
+  const rmax = Math.max(...profile.map(([r]) => r));
+  const center = [...p.center];
+  center[across] = r3(axis);
+  center[1] = r3(yb);
+  return { ...p, primitive: 'lathe', center, rotation: [0, 0, 0], outline: profile, size: [r3(2 * rmax), r3(yt - yb), r3(2 * rmax)] };
+}
 
 // A part's world-axis box.
 function box(p: FitPart) {
@@ -124,11 +179,21 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
   const old = prev.map(box);
   const oldNames = new Set(prev.map((p) => p.name));
   const oldRoles = new Set(prev.map((p) => role(p.name)));
-  const t = transcript.toLowerCase();
+  const t = transcript.toLowerCase(), said = t;
   const both = /\b(both|each|pair|either)\b|양쪽|양옆|둘 다|각각/.test(t);
   const counted = Math.max(0, ...[...t.matchAll(/\b(two|three|four|five|six|[2-6])\b|(두|세|네|다섯|여섯) ?(개|쪽|짝)/g)].map((m) => COUNTS[m[1] ?? m[2]] ?? Number(m[1])));
   const plural = (r: string) => both || new RegExp(`\\b${r.split(' ').at(-1)}(s|es)\\b`).test(t);
   const perRole = new Map<string, number>();
+
+  // A first build: a dome, helmet or vase follows its drawn silhouette as a lathe.
+  const body = (p: P): P => {
+    if (!['lathe', 'sphere'].includes(p.primitive)) return p;
+    const own = p.strokes.map((id) => byId.get(id)).filter((s): s is FitStroke => !!s && s.plane === 'view' && drawsShape(s, said));
+    const s = own.sort((a, b) => Math.hypot(...sub(b.bbox.max, b.bbox.min)) - Math.hypot(...sub(a.bbox.max, a.bbox.min)))[0];
+    const q = s && latheFrom(p, s);
+    if (q) log(`[fit] ${p.name}: the drawn silhouette, revolved`);
+    return q || p;
+  };
 
   // A new part: to the region its strokes mark, then touching the nearest part of the model.
   const place = (p: P): P => {
@@ -145,6 +210,35 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
       const { v, s } = ends.sort((x, y) => dist(x.v) - dist(y.v))[0];
       const f = s.plane === 'view' ? fixes(s) : [true, true, true];
       q = { ...p, center: p.center.map((c, a) => (f[a] ? v[a] : c)) };
+      const drawn = own.find((g) => drawsShape(g, said));
+      const toModel = (v: Vec) => old.map((o) => ({ o, d: Math.hypot(...[0, 1, 2].map((a) => Math.max(0, o.min[a] - v[a], v[a] - o.max[a]))) })).sort((x, y) => x.d - y.d)[0];
+      if (drawn && p.primitive === 'tube') {
+        // A horn along the drawn curve, from the end at the model, its base sunk a little into the model.
+        const tr = resampled(trace(drawn), 14);
+        if (toModel(tr.at(-1)!).d < toModel(tr[0]).d) tr.reverse();
+        const near = toModel(tr[0]);
+        const mid = near.o.min.map((m, a) => (m + near.o.max[a]) / 2);
+        const base = Math.max(Math.abs(p.radii?.[0] ?? 0), 0.07 * lengthOf(tr));
+        const root = tr[0].map((v, a) => v + unit(sub(mid, tr[0]))[a] * (near.d + base));
+        const path = [root, ...tr].map((x) => sub(x, root).map(r3));
+        q = { ...p, center: root.map(r3), rotation: [0, 0, 0], path };
+        log(`[fit] ${p.name}: the drawn curve (${path.length} points)`);
+        return taper(q);
+      }
+      if (drawn && p.primitive === 'membrane') {
+        // A wing in the drawn outline: its plane (Newell's normal), the root where it meets the model, span toward the far point.
+        const tr = resampled(trace(drawn), 40);
+        const nrm = unit(tr.reduce((acc, a, i) => { const b = tr[(i + 1) % tr.length]; return [acc[0] + (a[1] - b[1]) * (a[2] + b[2]), acc[1] + (a[2] - b[2]) * (a[0] + b[0]), acc[2] + (a[0] - b[0]) * (a[1] + b[1])]; }, [0, 0, 0]));
+        const root = tr.reduce((b, x) => (toModel(x).d < toModel(b).d ? x : b));
+        const far = tr.reduce((b, x) => (Math.hypot(...sub(x, root)) > Math.hypot(...sub(b, root)) ? x : b));
+        const raw = sub(far, root);
+        const u = unit(raw.map((c, i) => c - dot(raw, nrm) * nrm[i])), v = cross(nrm, u);
+        const outline = tr.map((x) => [r3(dot(sub(x, root), u)), r3(dot(sub(x, root), v))]);
+        const ext = (k: number) => Math.max(...outline.map((o) => o[k])) - Math.min(...outline.map((o) => o[k]));
+        q = { ...p, center: root.map(r3), rotation: euler(u, v, nrm), outline, size: [r3(ext(0)), r3(ext(1)), Math.abs(p.size[2] || 0.012)] };
+        log(`[fit] ${p.name}: the drawn outline (${outline.length} points)`);
+        return q;
+      }
       // A wing lies in its stroke's plane and reaches as far as the stroke, in
       // Spark's clean outline: its span from the root to the stroke's far point.
       if (p.primitive === 'membrane' && own.length) {
@@ -175,7 +269,7 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
   };
 
   const next = (p: P): P | null => {
-    if (!editing) return p;
+    if (!editing) return body(p);
     // Parts the model had (by name, or a role it had and no new stroke) stay as Spark kept them.
     const fresh = p.strokes.some((id) => byId.has(id));
     if (oldNames.has(p.name) || (!fresh && oldRoles.has(role(p.name)))) return p;
@@ -200,7 +294,11 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
   };
 
   const all = (parts: P[]): P[] => {
-    if (!editing) return alignModel(parts, strokes, log);
+    if (!editing) {
+      // A body built from its drawn silhouette already sits on the sketch; otherwise the whole model is moved onto it.
+      const shaped = parts.map(body);
+      return shaped.some((q, i) => q !== parts[i]) ? shaped : alignModel(shaped, strokes, log);
+    }
     let out = parts.map(next).filter((p): p is P => !!p);
     const flip = (q?: Vec[]) => q?.map(([x, ...rest]) => [-x, ...rest]);
     const mid0 = (Math.min(...old.map((b) => b.min[0])) + Math.max(...old.map((b) => b.max[0]))) / 2;

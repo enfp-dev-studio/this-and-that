@@ -20,11 +20,12 @@ export type StrokeInfo = {
   pen?: 'point' | 'shape'; // forced by the user: point = marks an existing part, shape = draws geometry
   bbox: { min: number[]; max: number[] };
   points: number[][]; // a few samples along the stroke
+  trace?: number[][]; // the whole stroke, evenly sampled: drawn shapes follow it (not sent to Spark)
   closed: boolean;
 };
 export type Part = {
   name: string;
-  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane';
+  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane' | 'lathe';
   center: number[];
   size: number[];
   rotation: number[];
@@ -54,7 +55,7 @@ const SCHEMA = {
         required: ['name', 'primitive', 'center', 'size', 'rotation', 'color', 'material', 'strokes', 'profile', 'path', 'radii', 'outline'],
         properties: {
           name: { type: 'string' },
-          primitive: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'cone', 'capsule', 'extrude', 'tube', 'membrane'] },
+          primitive: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'cone', 'capsule', 'extrude', 'tube', 'membrane', 'lathe'] },
           center: vec3,
           size: vec3,
           rotation: vec3,
@@ -80,19 +81,20 @@ How strokes are made: each stroke lies on a flat drawing plane. For plane "view"
 Images: the strokes from several viewpoints, each stroke in its own color with its id number at its middle. A gray model in the images is the current model, which the user is now editing.
 
 Parts:
-- primitive: box, cylinder, sphere, cone, capsule, extrude, tube or membrane.
+- primitive: box, cylinder, sphere, cone, capsule, extrude, tube, membrane or lathe.
 - center [x,y,z]; size [x,y,z] = full extents in the part's own frame before rotation. Cylinders, cones and capsules have their axis along their own Y: size[1] = length, size[0] = size[2] = diameter; a cone's tip points to its +Y.
 - rotation [x,y,z] in degrees, Euler XYZ; [0,0,0] when axis-aligned. Tilt only what is drawn tilted (a reclined back, a roof slope). Signs: a positive X rotation tips an upright part's top toward +Z (the front), so a chair back reclining backward has a negative X rotation; a positive Z rotation tips the top toward -X.
 - extrude: a flat slab whose outline is one closed stroke (a house's gable wall, a sign, a leaf, a letter). profile = that stroke id, size[2] = thickness, center = where the outline's middle should end up (move it to the right depth); its rotation is ignored. profile = -1 for every other primitive.
 - tube: a smooth, tapered horn, tail, tentacle, antenna or handle. center = its base, where it attaches to the model; path = 3 to 6 control points [x,y,z] relative to the base, from [0,0,0] to the tip, a clean smooth curve (take only the bend and direction from the strokes, never their wobble); radii = [base radius, tip radius]: thick at the base (a horn's base about a quarter of its length across), tapering to a near point; size = the extents of the whole tube; rotation [0,0,0]. path = [] and radii = [] for every other primitive.
-- membrane: a thin curved sheet: a wing, fin, ear, sail or cape. center = its root, where it attaches; outline = 5 to 12 [x,y] points of its flat shape in its own plane (x along its span, away from the body; y up), relative to the root, a clean well-proportioned silhouette; wings are bat-like unless the user says otherwise: a long leading edge, 3 to 4 pointed finger tips and scalloped edges between them (the app adds the ribs from the root to the tips), and a dark leathery color (#2b2a30) unless a color is asked for; size[2] = thickness (about 0.01); rotation turns that plane into place. outline = [] for every other primitive. Pairs (left and right wings, horns, ears) mirror each other.
+- membrane: a thin curved sheet: a wing, fin, ear, sail or cape. center = its root, where it attaches; outline = 5 to 12 [x,y] points of its flat shape in its own plane (x along its span, away from the body; y up), relative to the root, a clean well-proportioned silhouette; wings are bat-like unless the user says otherwise: a long leading edge, 3 to 4 pointed finger tips and scalloped edges between them (the app adds the ribs from the root to the tips), and a dark leathery color (#2b2a30) unless a color is asked for; size[2] = thickness (about 0.01); rotation turns that plane into place. outline = [] for every other primitive (except lathe).
+- lathe: a body of revolution about its own vertical axis: a helmet, dome, vase, bottle, bowl, bell. center = the middle of its base; outline = its half profile, [radius, y] from the bottom up to the top (radius 0 at a closed top), relative to center. Use it for the main body of such objects. Pairs (left and right wings, horns, ears) mirror each other.
 - color: a plausible real color as #rrggbb (the stroke colors in the images are only labels, never the object's colors) (wood brown, red roof, green leaves), or the color the user asks for. material: the closest hint.
 - strokes: the ids of the strokes this part explains. Every stroke is explained by some part, except pure gestures (a circle around a part or an arrow, meaning "this one").
 - A stroke with "pen": "point" was drawn with the Point pen: it only marks an existing part or place ("this one"), never new geometry. "pen": "shape" (Shape pen) means it draws geometry to follow, even over an existing part. Without "pen", decide from the drawing and the words.
 - Follow the drawing: lines drawn as separate posts, legs or rails become separate thin parts; a closed outline becomes a panel or slab. Anything the user names (roof, backrest, handle, door) gets its own part, so it can be colored and edited.
 - Complete what a real object of that kind needs even if only one side was drawn (the hidden legs of a chair, mirrored), but keep it simple: 3 to 16 parts. Parts should touch where they connect; nothing floats and nothing is left open (a gable roof needs its triangular gable ends: an extrude of the outline stroke, or a box rotated 45° about the ridge axis).
 - Editing: return the full updated list. Keep unchanged parts exactly as they were (same name, same numbers). "this" / "here" / "이거" / "여기" means the part or place the new strokes touch.
-- Strokes are guides, not geometry to trace: they say where a part goes and roughly its form (curved or straight, tall or low). Design a clean, well-proportioned part of the kind asked for, attached to the model there. Add as many as the words mean: "horns" or "wings" on a head or body = a mirrored pair, even if one side was drawn; never duplicates.
+- A stroke that draws a shape ("like this", "this shape", an outline or curve) gives that part its geometry, which the app takes from the stroke; a tap or a loose circle only says where. Either way, say which part each stroke makes (strokes) and its kind (primitive), attachment and pair. Design a clean, well-proportioned part of the kind asked for, attached to the model there. Add as many as the words mean: "horns" or "wings" on a head or body = a mirrored pair, even if one side was drawn; never duplicates.
 
 subject: what it is, a few English words. say: one short, friendly Korean sentence about what you made or changed.
 
