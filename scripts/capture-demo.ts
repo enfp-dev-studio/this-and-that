@@ -40,6 +40,18 @@ const sample = (p: string) => join(root, 'samples', p);
 // The pauldron's new outline (as in scripts/bench-sketch.ts): three spikes over the old dome.
 const SPIKES = [[280, 640], [330, 470], [380, 560], [430, 395], [480, 530], [530, 440], [575, 600]];
 
+// Closed outlines for detail edits (picture px), and the box around one.
+const teardrop = (cx: number, cy: number, r: number) => Array.from({ length: 25 }, (_, i) => { const t = (2 * Math.PI * i) / 24; return [Math.round(cx + r * 0.78 * Math.sin(t) * Math.sin(t / 2)), Math.round(cy - r * Math.cos(t))]; });
+const star = (cx: number, cy: number, R: number, r: number) => Array.from({ length: 11 }, (_, i) => { const a = -Math.PI / 2 + (i * Math.PI) / 5, k = i % 2 ? r : R; return [Math.round(cx + k * Math.cos(a)), Math.round(cy + k * Math.sin(a))]; });
+const crescent = (cx: number, cy: number, R: number) => {
+  const deg = (d: number) => (d * Math.PI) / 180;
+  const outer = Array.from({ length: 14 }, (_, i) => deg(50 + (260 * i) / 13)).map((a) => [cx + R * Math.cos(a), cy + R * Math.sin(a)]);
+  const inner = Array.from({ length: 12 }, (_, i) => deg(284 - (208 * i) / 11)).map((a) => [cx + 0.45 * R + 0.793 * R * Math.cos(a), cy + 0.793 * R * Math.sin(a)]);
+  return [...outer, ...inner].map(([x, y]) => [Math.round(x), Math.round(y)]);
+};
+const heart = (cx: number, cy: number, k: number) => Array.from({ length: 29 }, (_, i) => { const t = Math.PI + (2 * Math.PI * i) / 28; return [Math.round(cx + k * 16 * Math.sin(t) ** 3), Math.round(cy - k * (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)))]; });
+const outlined = (path: number[][]) => ({ path, box: [Math.min(...path.map((p) => p[0])), Math.min(...path.map((p) => p[1])), Math.max(...path.map((p) => p[0])), Math.max(...path.map((p) => p[1]))] });
+
 // One line per mark, said while it is drawn ("this" at the moment of the stroke).
 const SCENES: Record<string, Scene> = {
   hook: { image: sample('illust/armor.jpg'), marks: [{ say: 'Make this pauldron spiky, like this.', shape: 'contour', box: [280, 395, 575, 640] }] },
@@ -69,6 +81,13 @@ const SCENES: Record<string, Scene> = {
       { say: 'and add a little star here.', box: [170, 100, 290, 220], shape: 'circle' },
     ],
   },
+  // Detail edits whose stroke is the shape and the place: a teardrop gem, a
+// star hairpin, a crescent engraved on the breastplate (picture px).
+  gem: { image: sample('illust/armor.jpg'), marks: [{ say: 'Make this gem this shape.', shape: 'contour', ...outlined(teardrop(740, 600, 48)) }] },
+  hairpin: { image: sample('illust/gothic.jpg'), marks: [{ say: 'Turn this hairpin into this shape.', shape: 'contour', ...outlined(star(363, 543, 66, 28)) }] },
+  cameo: { image: sample('illust/gothic.jpg'), marks: [{ say: 'Make this cameo this shape.', shape: 'contour', ...outlined(heart(721, 992, 3.6)) }] },
+  clip: { image: sample('illust/armor.jpg'), marks: [{ say: 'Make this hair clip this shape.', shape: 'contour', ...outlined(crescent(576, 232, 34)) }] },
+  emblem: { image: sample('illust/armor.jpg'), marks: [{ say: 'Engrave this crescent emblem here.', shape: 'contour', ...outlined(crescent(730, 750, 58)) }] },
   // Drawing-driven edits on the desk: a new handle's shape, a level, where the stripes go.
   handle: { image: sample('desk.png'), marks: [{ say: 'Make the handle this shape.', shape: 'contour', box: [1128, 880, 1252, 1012], path: [[1130, 882], [1250, 882], [1250, 1010], [1130, 1010]] }] },
   coffee: { image: sample('desk.png'), marks: [{ say: 'Fill the coffee up to here.', shape: 'contour', box: [915, 840, 1120, 850], path: [[915, 845], [1118, 845]] }] },
@@ -318,10 +337,24 @@ async function scene2d(page: Page, cdp: CDPSession, rec: Recorder, name: string)
     page.waitForSelector('text=Didn’t hear anything', { timeout: 150_000 }).then(() => 'no speech'),
   ]).catch(() => 'timeout');
   const resultAt = Date.now() / 1000;
+  // The result picture itself, for the acceptance check (accept-demo.ts).
+  if (outcome === 'result') {
+    const b64 = await page.evaluate(async () => {
+      const r = (window as any).editor?.getSnapshot().result;
+      if (!r) return null;
+      const blob = await (await fetch(r.url)).blob();
+      return new Promise<string>((done) => {
+        const fr = new FileReader();
+        fr.onload = () => done(String(fr.result).split(',')[1]);
+        fr.readAsDataURL(blob);
+      });
+    });
+    if (b64) writeFileSync(join(out, `${name}.result.png`), Buffer.from(b64, 'base64'));
+  }
   log(`${name}: ${outcome} ${((Date.now() - t1) / 1000).toFixed(1)} s after release`);
   await sleep(3500);
   const zero = await rec.stop(name);
-  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: releaseAt - zero, result: resultAt - zero, speech: clip.speech }, null, 1));
+  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ image: scene.image, voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: releaseAt - zero, result: resultAt - zero, speech: clip.speech }, null, 1));
   return outcome;
 }
 
@@ -357,13 +390,22 @@ const HELMET = {
   side: [[[0, 0.03, 0.17], [0, 0.2, 0.19], [0, 0.33, 0.16], [0, 0.42, 0.08], [0, 0.445, 0], [0, 0.42, -0.09], [0, 0.32, -0.17], [0, 0.18, -0.2], [0, 0.03, -0.19]]],
   // Started just off the dome, so they are drawn facing the camera (not on its steep side).
   horns: [-1, 1].map((k) => [[0.17, 0.38], [0.24, 0.44], [0.31, 0.53], [0.33, 0.64], [0.29, 0.73]].map(([x, y]) => [k * x, y, 0])),
-  wings: [[[0.19, 0.28, -0.02], [0.19, 0.4, -0.08], [0.19, 0.54, -0.16], [0.19, 0.64, -0.27], [0.19, 0.6, -0.33], [0.19, 0.52, -0.27], [0.19, 0.46, -0.31], [0.19, 0.4, -0.24], [0.19, 0.34, -0.27], [0.19, 0.3, -0.17], [0.19, 0.27, -0.05]]],
+  // A bat wing from the side of the helmet, back and up: three pointed tips, scallops between.
+  wings: [[[0, 0.3, -0.02], [0, 0.48, -0.12], [0, 0.66, -0.26], [0, 0.72, -0.36], [0, 0.6, -0.33], [0, 0.56, -0.44], [0, 0.46, -0.37], [0, 0.4, -0.45], [0, 0.34, -0.33], [0, 0.28, -0.2], [0, 0.27, -0.06]].map(([, y, z]) => [0.19, y, z])],
 };
 
 async function sceneHelmet(page: Page, rec: Recorder) {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.locator('[role=radio][aria-label="3D"]').click();
   await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
+  // Closer than the default framing (made for a chair): the helmet and its horns fill most of the view.
+  await page.evaluate(() => {
+    const { stage } = window as any;
+    const d = stage.camera.position.clone().sub(stage.controls.target).multiplyScalar(0.5);
+    stage.controls.target.set(0, 0.36, -0.08);
+    stage.camera.position.copy(stage.controls.target).add(d);
+    stage.controls.update();
+  });
   await sleep(1500);
   const steps = [
     { say: 'A knight’s helmet.', draw: [['front', HELMET.front], ['side', HELMET.side]] as const },

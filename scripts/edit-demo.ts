@@ -75,7 +75,7 @@ type Pulse = { t: number; x: number; y: number; rx: number; ry: number; color: s
 // Stretches of a clip in order, each in real time or cut (`fast`: a wait, left
 // out; what follows shows how long it took, `wait` s, default its length).
 // `segs` overrides real/fastUntil.
-type Seg = { from: number; to: number; fast?: boolean; wait?: number };
+type Seg = { from: number; to: number; fast?: boolean; wait?: number; speed?: number }; // `speed`: a silent stretch played faster (the scripted pen, slower than a hand)
 
 // How long a cut wait took: a stopwatch and the seconds, as a small label.
 async function waitLabel(seconds: number, file: string) {
@@ -143,7 +143,7 @@ async function clip(name: string, plan: Plan) {
   f.push(`${v}split=${shown.length}${shown.map(({ i }) => `[g${i}]`).join('')}`);
   for (const [n, { g, i, cut }] of shown.entries()) {
     const last = n === shown.length - 1 ? hold : '';
-    const base = `[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=PTS-STARTPTS`;
+    const base = `[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=(PTS-STARTPTS)/${g.speed ?? 1}`;
     if (cut) {
       const png = join(work, `wait-${name}-${i}.png`);
       const { w } = await waitLabel(cut.wait ?? cut.to - cut.from, png);
@@ -153,14 +153,14 @@ async function clip(name: string, plan: Plan) {
   }
   f.push(`${shown.map(({ i }) => `[s${i}]`).join('')}concat=n=${shown.length}:v=1:a=0[out]`);
   // The take's voice at its times in the clip, heard in the stretches shown.
-  const outDur = shown.reduce((sum, { g }) => sum + g.to - g.from, 0) + (plan.hold ?? 0);
+  const outDur = shown.reduce((sum, { g }) => sum + (g.to - g.from) / (g.speed ?? 1), 0) + (plan.hold ?? 0);
   if (plan.voice) {
     const vi = input('-i', plan.voice.file);
     const ms = Math.max(0, Math.round(plan.voice.at * 1000));
     const skip = Math.max(0, -plan.voice.at);
     const A = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo';
     f.push(`[${vi}:a]atrim=start=${skip.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${ms}|${ms},aresample=48000,${A},apad=whole_dur=${D.toFixed(3)},asplit=${shown.length}${shown.map(({ i }) => `[va${i}]`).join('')}`);
-    for (const { g, i } of shown) f.push(`[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`);
+    for (const { g, i } of shown) f.push(g.speed ? `[va${i}]atrim=0:${((g.to - g.from) / g.speed).toFixed(3)},volume=0,asetpts=PTS-STARTPTS[a${i}]` : `[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`);
     f.push(`${shown.map(({ i }) => `[a${i}]`).join('')}concat=n=${shown.length}:v=0:a=1,apad=whole_dur=${outDur.toFixed(3)}[aout]`);
   } else f.push(`anullsrc=r=48000:cl=stereo,atrim=0:${outDur.toFixed(3)}[aout]`);
   const out = join(work, `${String(seq++).padStart(2, '0')}-${name}.mp4`);
@@ -187,7 +187,7 @@ async function macaronBeat() {
   await sharp(Buffer.from(bg)).composite([{ input: wrong, left: 50, top: 300 }]).png().toFile(png);
   // Right: the take, cropped to the picture: tap and say it, the wait cut (its time shown), the right one.
   const src = join(demo, 'macaron.mp4');
-  const s0 = Math.max(0, t.voiceAt - 0.3), s1 = t.release + 0.8, s2 = t.result - 0.3, s3 = Math.min(dur(src), t.result + 3);
+  const s0 = Math.max(0, t.voiceAt + t.speech[0].at - 0.6), s1 = t.release + 0.1, s2 = t.result + 0.8, s3 = Math.min(dur(src), s2 + 2.4);
   const subPng = join(work, 'sub-macaron.png');
   await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="80"><rect x="${(900 - 520) / 2}" y="4" width="520" height="70" rx="10" fill="#000" fill-opacity="0.72"/><text x="450" y="52" font-family="${FONT}" font-size="40" font-weight="500" fill="#fff" text-anchor="middle">${esc(t.speech[0].say)}</text></svg>`)).png().toFile(subPng);
   const waitPng = join(work, 'wait-macaron.png');
@@ -239,9 +239,11 @@ const size = (file: string) => {
   return [Number(/pixelWidth: (\d+)/.exec(o)![1]), Number(/pixelHeight: (\d+)/.exec(o)![1])];
 };
 
-// `after`: real time kept after the pen lifts (the outlines and callouts appear);
+// From just before the first word to the moment the talk button is let go,
+// then a cut straight to the finished result (0.8 s after it lands, past the
+// reveal), shown once for `show` s with the time the wait took.
 // `maxZoom`: how close the camera may go on small marks.
-function plan2d(name: string, image: string, ref = false, after = 5.2, maxZoom = 1.38): Plan {
+function plan2d(name: string, image: string, ref = false, maxZoom = 1.38, show = 2.6): Plan {
   const t = timing(name);
   const start = t.voiceAt + t.speech[0].at;
   // The camera: in on the marks while drawing, and on them for the result too.
@@ -253,15 +255,24 @@ function plan2d(name: string, image: string, ref = false, after = 5.2, maxZoom =
   const [bx0, bx1, by0, by1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
   const zm = Math.max(1.12, Math.min(maxZoom, 1778 / ((bx1 - bx0) * 2.4 + 1), 1000 / ((by1 - by0) * 2.2 + 1)));
   const focus = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
+  const lead = Math.max(0, start - 0.6);
   const zoom: Key[] = [
-    { t: start - 0.5, z: 1, x: 800, y: 500 },
-    { t: start + 0.5, z: zm, ...focus },
+    { t: lead, z: 1, x: 800, y: 500 },
+    { t: start + 0.4, z: zm, ...focus },
   ];
-  // Real time while drawing and while the outlines and callouts appear, the wait cut (its time shown), the result (held 3 s more).
-  const real = Math.min(t.release + after, t.result - 0.3);
-  const D = dur(join(demo, `${name}.mp4`));
-  return { real, fastUntil: t.result - 0.3, segs: [{ from: 0, to: real }, { from: real, to: t.result - 0.3, fast: true, wait: t.result - t.release }, { from: t.result - 0.3, to: D }], subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, hold: 3 };
+  const cut = t.release + 0.1, from = t.result + 0.8;
+  const end = Math.min(dur(join(demo, `${name}.mp4`)), from + show);
+  // The scripted pen draws a long outline slower than a hand: once the words are said, the rest of the stroke in ~2 s.
+  const said = t.voiceAt + Math.max(...t.speech.map((p) => p.at + p.dur)) + 0.3;
+  const drawing: Seg[] = cut - said > 3 ? [{ from: lead, to: said }, { from: said, to: cut, speed: (cut - said) / 2 }] : [{ from: lead, to: cut }];
+  return { real: cut, fastUntil: from, segs: [...drawing, { from: cut, to: from, fast: true, wait: t.result - t.release }, { from, to: end }], subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } };
 }
+
+// The takes that passed scripts/accept-demo.ts (out/demo/accept.json).
+const accepted = (name: string) => {
+  const f = join(demo, 'accept.json');
+  return existsSync(f) && !!JSON.parse(readFileSync(f, 'utf8'))[name]?.pass;
+};
 
 // ---------- pointing words ----------
 
@@ -339,7 +350,7 @@ async function pointing(name: string, image: string, plan: Plan, legend: string[
       words.push({ text: w.word, at: t.voiceAt + p.at + w.at, mark: deictic ? i : undefined });
     }
   });
-  const landed = t.release + 4.2; // the callouts appear (Spark's answer), ~4 s after the pen lifts
+  const landed = plan.fastUntil; // the result, where the cut lands
   const subs: Sub[] = [];
   for (let k = 0; k <= words.length; k++) {
     const png = join(work, `say-${name}-${k}.png`);
@@ -349,7 +360,7 @@ async function pointing(name: string, image: string, plan: Plan, legend: string[
   for (let i = 0; i < legend.length; i++) {
     const png = join(work, `chips-${name}-${i}.png`);
     await chips(legend, i + 1, png);
-    subs.push({ from: landed + 0.3 * i, to: i < legend.length - 1 ? landed + 0.3 * (i + 1) - 0.001 : plan.real - 0.1, text: '', png });
+    subs.push({ from: landed + 0.3 * i, to: i < legend.length - 1 ? landed + 0.3 * (i + 1) - 0.001 : plan.segs!.at(-1)!.to, text: '', png });
   }
   const pulses: Pulse[] = words.filter((w) => w.mark !== undefined).map((w) => ({ t: w.at, ...rings[w.mark!] }));
   legend.forEach((_, i) => pulses.push({ t: landed + 0.3 * i, ...rings[i] }));
@@ -423,25 +434,22 @@ async function compareCard(seconds: number) {
 
 const gray = '#a1a1aa';
 const LINE = ['Complex edits, asked simply:', 'draw and talk at the same time.'];
-// 0:00 the line, then the problem
+// 0:00 the hook: the strongest detail edit that passed (a teardrop drawn on the gem), then the line and the problem
+const illust = (f: string) => join(root, 'samples', 'illust', f);
+const opener = accepted('gem') ? 'gem' : null;
+if (opener) await clip(opener, await pointing(opener, illust('armor.jpg'), plan2d(opener, illust('armor.jpg'), false, 1.6), []));
 await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 4);
 await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { text: 'The last 10% is details, and words can’t point.', size: 52, color: gray }], 4);
-// simple to complex: one tap, a shape drawn, three edits in one breath, 3D
+// simple to complex: one tap, then edits where the stroke is the shape and the
+// place (only those that passed the acceptance check), three in one breath, 3D
 await macaronBeat();
-await card([{ text: 'A sketch says how.', size: 72, weight: 600 }], 2.5);
-await clip('hook', plan2d('hook', join(root, 'samples', 'illust', 'armor.jpg')));
-{
-  // The drawing is the instruction: a new handle's shape, where the stripes go.
-  const desk = join(root, 'samples', 'desk.png');
-  await clip('handle', await pointing('handle', desk, plan2d('handle', desk, false, 5.2, 1.7), []));
-  await clip('stripes', await pointing('stripes', desk, plan2d('stripes', desk, false, 5.2, 1.6), []));
+const takes = [['clip', 'armor.jpg'], ['cameo', 'gothic.jpg'], ['hairpin', 'gothic.jpg'], ['hook', 'armor.jpg'], ['emblem', 'armor.jpg']];
+for (const [name, image] of takes) if (name !== opener && accepted(name)) await clip(name, await pointing(name, illust(image), plan2d(name, illust(image), false, 1.6), []));
+if (accepted('three')) {
+  await clip('three', await pointing('three', illust('keyvisual.jpg'), plan2d('three', illust('keyvisual.jpg')), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
+  // One before/after toggle: before (held), then after again.
+  await clip('hold', { real: 99, fastUntil: 99, segs: [{ from: 1.25, to: 3.9 }], subs: [] });
 }
-await compareCard(7.5);
-{
-  const image = join(root, 'samples', 'illust', 'keyvisual.jpg');
-  await clip('three', await pointing('three', image, plan2d('three', image, false, 6.6), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
-}
-await clip('hold', { real: 99, fastUntil: 99, subs: [] });
 await card([{ text: 'Only what you marked changes.', size: 72, weight: 600 }], 3);
 // the evidence
 await card(
@@ -486,10 +494,10 @@ if (existsSync(join(demo, 'helmet.timing.json'))) {
   const segs: Seg[] = [];
   let at = 0;
   for (const st of steps) {
-    segs.push({ from: at, to: st.release + 0.4 }, { from: st.release + 0.4, to: st.done - 0.2, fast: true, wait: st.done - st.release });
-    at = st.done - 0.2;
+    segs.push({ from: at, to: st.release + 0.1 }, { from: st.release + 0.1, to: st.done + 1.1, fast: true, wait: st.done - st.release });
+    at = st.done + 1.1; // the new parts have grown in
   }
-  segs.push({ from: at, to: paint + 1.2 }, { from: paint + 1.2, to: painted - 0.3, fast: true, wait: painted - paint }, { from: painted - 0.3, to: D });
+  segs.push({ from: at, to: paint + 0.4 }, { from: paint + 0.4, to: painted + 0.3, fast: true, wait: painted - paint }, { from: painted + 0.3, to: Math.min(D, painted + 5.3) });
   await clip('helmet', { real: 0, fastUntil: 0, segs: segs.filter((g) => g.to - g.from > 0.05), subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
 }
 await card(
