@@ -36,6 +36,10 @@ Any other path returns 404, including `images/generations`.
 
 The counters live in one SQLite-backed Durable Object (`Limiter`, a single global instance), one row per counter per UTC day. Earlier days are purged automatically. A Durable Object is used rather than KV because free-plan KV allows only 1,000 writes a day and its increments aren't atomic.
 
+## Deploy in one command
+
+`scripts/deploy-cloudflare.sh` runs the steps below in order: deploys the Worker, pipes `MODEL_API_KEY` (from `../this-and-that/.env`, or `ENV_FILE=…`) and `DEMO_PASSCODE` (from the git-ignored `.deploy-notes.txt`, if it has a `DEMO_PASSCODE=` line) to `wrangler secret put` through stdin without printing them, builds the client with the Worker URL, creates the Pages project if needed and deploys it. Then `node scripts/smoke-cloudflare.mjs <worker url> <pages url>` checks the result with one tiny Spark call and one realtime session (no jobs counted): the app and samples are served, CORS, the passcode (refused without, accepted with), Spark and the realtime socket through the Worker.
+
 ## Deploy (run these yourself, from the repo root)
 
 1. Check that Wrangler is logged in. Run `npx wrangler login` only if `whoami` fails:
