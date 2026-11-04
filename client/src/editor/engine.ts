@@ -541,6 +541,19 @@ class Editor {
     this.draw();
   }
 
+  // Download what is on screen: the pending result, or the current version.
+  async exportCurrent() {
+    const { result, versions, index } = this.snapshot;
+    const url = result?.url ?? versions[index]?.url;
+    if (!url) return;
+    const blob = await (await fetch(url)).blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `this-and-that-v${index + (result ? 2 : 1)}.${blob.type === 'image/png' ? 'png' : 'jpg'}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
   setCompare(on: boolean) {
     this.set({ compare: on });
   }

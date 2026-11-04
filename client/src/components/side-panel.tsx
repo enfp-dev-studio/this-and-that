@@ -1,4 +1,4 @@
-import { Check, Circle, ImagePlus, Loader2, Pin, Trash2, Zap } from 'lucide-react';
+import { Check, Circle, ImagePlus, Loader2, Moon, Pin, Sun, Trash2, Zap } from 'lucide-react';
 import { editor, type StepState } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
@@ -13,6 +13,8 @@ import { TaskCard } from '@/components/tasks';
 import { refLetter } from '@/components/ref-panel';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
+import { useTheme } from '@/components/theme-provider';
+import { LAB } from '@/lab';
 
 const STEPS = [
   { key: 'sam', label: 'SAM', detail: 'outlining what you marked' },
@@ -27,17 +29,19 @@ function StepIcon({ state }: { state: StepState }) {
   return <Circle className="text-muted-foreground" />;
 }
 
-// What the app heard and understood, how far the edit is, and the versions.
+// The details sheet: what the app heard and understood, references, the
+// versions, and (lab) the experiment, the task and the progress steps.
 export function SidePanel() {
   const s = useEditor();
+  const { theme, setTheme } = useTheme();
   const working = s.mode === 'processing';
   const done = STEPS.filter((st) => s.steps[st.key] === 'done').length;
 
   return (
-    <ScrollArea className="h-full">
+    <ScrollArea className="min-h-0 flex-1">
       <div className="flex flex-col gap-4 p-4">
-        {s.experiment && <ExperimentCard />}
-        <TaskCard />
+        {LAB && s.experiment && <ExperimentCard />}
+        {LAB && <TaskCard />}
         <Card>
           <CardHeader>
             <CardTitle>Caption</CardTitle>
@@ -99,7 +103,7 @@ export function SidePanel() {
           </CardContent>
         </Card>
 
-        {(working || s.mode === 'review') && (
+        {LAB && (working || s.mode === 'review') && (
           <Card>
             <CardHeader>
               <CardTitle>Progress</CardTitle>
@@ -190,6 +194,17 @@ export function SidePanel() {
               ))}
             </CardContent>
           )}
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Theme</CardTitle>
+            <CardDescription>{theme === 'dark' ? 'Dark' : 'Light'}</CardDescription>
+            <CardAction>
+              <Button variant="outline" size="icon-touch" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Switch theme">
+                {theme === 'dark' ? <Sun /> : <Moon />}
+              </Button>
+            </CardAction>
+          </CardHeader>
         </Card>
       </div>
     </ScrollArea>

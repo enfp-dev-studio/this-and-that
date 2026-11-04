@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Upload } from 'lucide-react';
+import { ImageIcon } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Toolbar } from '@/components/toolbar';
-import { TrySample } from '@/components/sample-menu';
+import { SAMPLES } from '@/editor/presets';
 
 // The image on a quiet dotted backdrop. The canvas draws the image, marks,
 // SAM outlines and sheen; the before/after overlay sits exactly over it.
@@ -62,25 +61,12 @@ export function Stage() {
       )}
 
       {s.mode === 'empty' && (
-        <div className="absolute inset-0 grid place-items-center p-4">
-          <Card className="w-(--card-width)">
-            <CardHeader>
-              <CardTitle>Point at it, say it, done.</CardTitle>
-              <CardDescription>
-                Open an AI image, then draw on it while you talk: circle the mug and say “make this red”. Only what you marked changes.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex gap-2">
-              <TrySample />
-              <Button size="touch" variant="outline" className="flex-1" asChild>
-                <label>
-                  <Upload />
-                  Open image
-                  <input type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && editor.openFile(e.target.files[0])} />
-                </label>
-              </Button>
-            </CardContent>
-          </Card>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-4">
+          <p className="text-sm text-muted-foreground">Draw on it. Say what you want.</p>
+          <Button size="touch" onClick={() => editor.open(SAMPLES[0].url)}>
+            <ImageIcon />
+            Try a sample
+          </Button>
         </div>
       )}
 
