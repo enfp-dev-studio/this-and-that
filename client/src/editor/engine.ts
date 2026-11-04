@@ -290,13 +290,15 @@ class Editor {
     // The picture clears the floating chrome above and the toolbar below.
     const above = surface.key === 'target' ? Math.max(pad, themeLength('--chrome-height')) : pad;
     const below = surface.key === 'target' ? themeLength('--toolbar-clearance') : pad;
-    const aw = Math.max(1, w - pad * 2), ah = Math.max(1, h - above - below);
+    // An open reference floats at the left; the picture fits beside it.
+    const left = surface.key === 'target' && this.snapshot.activeRef ? themeLength('--ref-width') + pad : 0;
+    const aw = Math.max(1, w - left - pad * 2), ah = Math.max(1, h - above - below);
     const fit = Math.min(aw / img.naturalWidth, ah / img.naturalHeight);
     const zoom = surface.key === 'target' ? this.view : { zoom: 1, x: 0, y: 0 };
     const k = fit * zoom.zoom;
     const iw = img.naturalWidth * k, ih = img.naturalHeight * k;
     // Zoomed around the fitted centre, then panned.
-    return { x: (w - iw) / 2 + zoom.x, y: above + ah / 2 - ih / 2 + zoom.y, w: iw, h: ih, k };
+    return { x: left + (w - left - iw) / 2 + zoom.x, y: above + ah / 2 - ih / 2 + zoom.y, w: iw, h: ih, k };
   }
 
   // ---------- zoom and pan (the picture only) ----------
@@ -311,6 +313,12 @@ class Editor {
     this.view.x += px - (r2.x + u * r2.k);
     this.view.y += py - (r2.y + v * r2.k);
     this.viewChanged();
+  }
+
+  // Zoom around the middle of the screen (the zoom buttons).
+  zoomBy(factor: number) {
+    const el = this.target.el;
+    if (el) this.zoomAt(el.clientWidth / 2, el.clientHeight / 2, factor);
   }
 
   private panBy(dx: number, dy: number) {
@@ -959,6 +967,35 @@ class Editor {
         pcm: v?.pcm ?? null,
       };
       await this.sendJob(body, { asr: v?.asr ?? null });
+    } catch (err) {
+      this.fail((err as Error).message);
+    }
+  }
+
+  // The keyboard fallback: the marks drawn so far, with the request typed
+  // instead of said (any recording is dropped).
+  async sendTyped(text: string) {
+    text = text.trim();
+    const { mode } = this.snapshot;
+    if (!text || !this.target.image || mode === 'processing' || mode === 'review') return;
+    if (!this.strokes.some((s) => !s.on)) return this.onNotice('Draw a mark on the picture first, then type what to change there.');
+    if (mode === 'recording') {
+      clearTimeout(this.recordTimer);
+      this.live?.cancel();
+      this.live = null;
+    }
+    this.forgetSnap();
+    this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'active' }, elapsedMs: 0, caption: text });
+    this.updateSamStep();
+    this.animate();
+    try {
+      const refId = (id?: string) => this.snapshot.refs.find((r) => r.id === id)?.imageId;
+      await this.sendJob({
+        imageId: await this.current()!.imageId,
+        strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on, pen }) => ({ mark, points, markId, pen, on: on ? await refId(on) : undefined }))),
+        pinned: await Promise.all(this.snapshot.refs.filter((r) => r.pinned).map((r) => r.imageId)),
+        text,
+      });
     } catch (err) {
       this.fail((err as Error).message);
     }

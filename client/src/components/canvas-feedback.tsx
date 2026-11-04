@@ -26,7 +26,7 @@ export function StatusChip() {
   } else if (s.mode === 'review') text = s.peek ? 'Before' : 'Hold the picture to see before · Keep or discard';
   if (!text) return null;
   return (
-    <Badge variant="secondary" className="absolute top-(--chrome-height) left-1/2 -translate-x-1/2 shadow-lg">
+    <Badge variant="outline" className="absolute top-(--chrome-height) left-1/2 -translate-x-1/2 bg-card shadow-lg">
       {s.mode === 'processing' ? <Loader2 className="animate-spin" /> : s.mode === 'recording' ? <Mic /> : null}
       {text}
     </Badge>
@@ -54,7 +54,7 @@ export function FailNotice() {
     </span>
   );
   return (
-    <div role="alert" className="absolute top-(--chrome-height) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+    <div role="alert" className="absolute top-(--chrome-height) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur">
       {LAB ? (
         <Tooltip>
           <TooltipTrigger asChild>{text}</TooltipTrigger>
@@ -63,7 +63,7 @@ export function FailNotice() {
       ) : (
         text
       )}
-      <Button size="touch" className="rounded-full" onClick={() => editor.retry()}>
+      <Button size="touch" onClick={() => editor.retry()}>
         <RotateCcw />
         Try again
       </Button>
@@ -74,6 +74,15 @@ export function FailNotice() {
 // Each understood instruction beside its mark: "① brooch → like the rose ref".
 export function Callouts() {
   const s = useEditor();
+  // Once the result is in, the callouts step aside after a moment so the
+  // change itself shows; pointing at one brings it back.
+  const [quiet, setQuiet] = useState(false);
+  useEffect(() => {
+    setQuiet(false);
+    if (s.mode !== 'review') return;
+    const t = setTimeout(() => setQuiet(true), 2500);
+    return () => clearTimeout(t);
+  }, [s.mode]);
   if (!s.edits.length || s.peek || (s.mode !== 'processing' && s.mode !== 'review')) return null;
   return (
     <>
@@ -84,7 +93,7 @@ export function Callouts() {
         return (
           <Tooltip key={e.mark}>
             <TooltipTrigger asChild>
-              <Badge variant="secondary" className="absolute max-w-(--callout-width) -translate-y-1/2 shadow-lg" style={{ left: at.x, top: at.y }}>
+              <Badge variant="secondary" className={cn('absolute max-w-(--callout-width) -translate-y-1/2 shadow-lg transition-opacity duration-500', quiet && 'opacity-0 hover:opacity-100')} style={{ left: at.x, top: at.y }}>
                 <MarkBadge mark={e.mark} />
                 {s.localMarks.includes(e.mark) && <Zap />}
                 {e.kind === 'sketch' && <PenTool />}

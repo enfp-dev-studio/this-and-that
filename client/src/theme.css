@@ -7,21 +7,22 @@
  *                            server tells the models the marks by colour name
  *   --mark-halo, --mark-text the outline around a mark and its number
  *   --sheen                  the light that sweeps regions still being edited
- *   --viewport               3D sketch mode's scene: a light paper in both
- *                            themes, since the pencil strokes are dark ink
+ *   --grid                   3D sketch mode's floor grid (its scene uses --canvas,
+ *                            its pencil strokes --foreground)
  *   layout: --panel-width, --toolbar-offset, --stage-padding,
  *           --toolbar-clearance, --status-width, --slider-width, --card-width, --ref-width, --type-width, --thumb-width,
  *           --caption-offset, --caption-width, --callout-width, --ref-thumb-width,
- *           --canvas-dot-gap, --chrome-height (the floating top panels; what sits below them starts here)
+ *           --canvas-dot-gap, --chrome-height (the floating top panels; what sits below them starts here),
+ *           --bar-width (the bottom bar's three slots)
  */
 
 :root {
-  --radius: 0.75rem;
-  --viewport: #f3efe6;
+  --radius: 0.5rem;
   --panel-width: 20rem;
   --toolbar-offset: 1.5rem;
   --stage-padding: 2rem;
   --chrome-height: 5.5rem;
+  --bar-width: 52rem;
   --toolbar-clearance: 8rem;
   --status-width: 13rem;
   --slider-width: 10rem;
@@ -45,7 +46,7 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: oklch(0.5 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -54,6 +55,7 @@
   --ring: oklch(0.708 0 0);
   --canvas: oklch(0.955 0 0);
   --canvas-dot: oklch(0.88 0 0);
+  --grid: oklch(0.8 0 0);
   --mark-1: oklch(0.63 0.23 27);
   --mark-2: oklch(0.6 0.2 255);
   --mark-3: oklch(0.7 0.19 147);
@@ -86,6 +88,7 @@
   --ring: oklch(0.556 0 0);
   --canvas: oklch(0.13 0 0);
   --canvas-dot: oklch(0.22 0 0);
+  --grid: oklch(0.58 0 0);
   --mark-1: oklch(0.66 0.23 27);
   --mark-2: oklch(0.64 0.19 255);
   --mark-3: oklch(0.74 0.19 147);

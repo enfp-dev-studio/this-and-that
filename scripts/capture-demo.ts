@@ -1,0 +1,386 @@
+// Demo footage for DEMO.md: each scene recorded as its own screen-only clip
+// (captions are added in editing) into out/demo/<scene>.mp4. Drives the real
+// app on BASE (default :8787; dark theme, no ?lab) in Chrome via Playwright:
+// pen events at a human pace (the strokes are what you see), a synthetic
+// English voice (say -v Samantha; VOICE= picks another) fed to the app as its
+// microphone and written beside each clip for the edit, a small dot
+// following the pen, and the screen recorded with Chrome's screencast, then
+// encoded with ffmpeg at 30 fps. Waits are kept in full (sped up in editing).
+//
+//   node --env-file=.env scripts/capture-demo.ts [scene …]
+//   scenes: hook macaron three hold chair (default), also brooch cuff; hold follows three
+//   Each take also writes out/demo/<scene>.timing.json (when its voice starts, the
+//   request goes out and the result comes back, and what is said when) for edit-demo.ts.
+//   HEADED=1 shows the browser window.
+
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { chromium, type CDPSession, type Page } from 'playwright-core';
+import { locate, strokePoints } from '../m0/clipkit.ts';
+import { audioDurationMs, type Point, type Stroke } from '../server/render.ts';
+
+const BASE = process.env.BASE ?? 'http://localhost:8787';
+const W = 1600, H = 1000;
+const root = join(import.meta.dirname, '..');
+const out = join(root, 'out', 'demo');
+const clipDir = join(out, 'clips');
+mkdirSync(clipDir, { recursive: true });
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+const VOICE = process.env.VOICE ?? 'Samantha';
+const log = (...a: unknown[]) => console.log(`[${new Date().toTimeString().slice(0, 8)}]`, ...a);
+
+// ---------- the scenes ----------
+
+type Mark = { say: string; object?: string; box?: number[]; shape: 'circle' | 'tap' | 'contour'; on?: 'ref' };
+type Scene = { image: string; ref?: string; marks: Mark[] };
+const sample = (p: string) => join(root, 'samples', p);
+
+// The pauldron's new outline (as in scripts/bench-sketch.ts): three spikes over the old dome.
+const SPIKES = [[280, 640], [330, 470], [380, 560], [430, 395], [480, 530], [530, 440], [575, 600]];
+
+// One line per mark, said while it is drawn ("this" at the moment of the stroke).
+const SCENES: Record<string, Scene> = {
+  hook: { image: sample('illust/armor.jpg'), marks: [{ say: 'Make this pauldron spiky, like this.', shape: 'contour', box: [280, 395, 575, 640] }] },
+  macaron: { image: join(root, 'out', 'bench-hard', 'grid', 'original.png'), marks: [{ say: 'Make this one chocolate.', shape: 'tap', box: [1140, 668, 1305, 885] }] },
+  brooch: {
+    image: sample('illust/armor.jpg'),
+    ref: sample('tasks/ref-rose-brooch.jpg'),
+    marks: [
+      { say: 'Change this brooch', object: 'the jewel brooch at her collar', shape: 'circle' },
+      { say: 'to look like that.', object: 'the rose brooch ornament', shape: 'circle', on: 'ref' },
+    ],
+  },
+  cuff: {
+    image: sample('tasks/gothic-cuff.jpg'),
+    marks: [
+      { say: 'Make this lace', object: 'the sleeve cuff with a plain zigzag trim at the lower right', shape: 'circle' },
+      { say: 'match that one.', object: 'the sleeve cuff with white rose lace near her chin', shape: 'circle' },
+    ],
+  },
+  three: {
+    image: sample('illust/keyvisual.jpg'),
+    marks: [
+      // Naming it: the synthetic "Remove this" / "Erase this" were heard as "move this" / "this".
+      { say: 'Remove this phone,', object: 'the smartphone in her hand', shape: 'circle' },
+      // The jacket's body, short of the backpack beside her (SAM then gets all of it, not a patch).
+      { say: 'make this red,', box: [1060, 650, 1620, 1260], shape: 'circle' },
+      { say: 'and add a little star here.', box: [170, 100, 290, 220], shape: 'circle' },
+    ],
+  },
+};
+
+type Spoken = { at: number; dur: number; say: string }; // seconds into the voice track
+type Clip = { strokes: (Stroke & { on?: 'ref' })[]; speech: Spoken[] };
+
+// The voice, one phrase after another (a short pause between), and each
+// mark drawn while its phrase is said (like clipkit.buildClip, with VOICE).
+// Writes clips/<name>.wav (44.1 kHz mono): the app's microphone and the edit's sound.
+async function voiceClip(name: string, image: Buffer, marks: { say: string; box: number[] }[]) {
+  const { width: W, height: H } = await (await import('sharp')).default(image).metadata();
+  const parts: { file: string; at: number }[] = [];
+  const strokes: Stroke[] = [];
+  const speech: Spoken[] = [];
+  let at = 400;
+  for (const [i, m] of marks.entries()) {
+    const aiff = join(clipDir, `${name}-${i}.aiff`);
+    execFileSync('say', ['-v', VOICE, '-o', aiff, m.say]);
+    const d = await audioDurationMs(aiff);
+    parts.push({ file: aiff, at });
+    speech.push({ at: at / 1000, dur: d / 1000, say: m.say });
+    strokes.push({ mark: i + 1, points: strokePoints(m.box, 'circle', at + 100, at + Math.max(1300, d), W!, H!) });
+    at += Math.max(d, 1300) + 350;
+  }
+  const inputs = parts.flatMap((p) => ['-i', p.file]);
+  const filter = parts.map((p, i) => `[${i}:a]adelay=${p.at}|${p.at}[a${i}]`).join(';') + ';' + parts.map((_, i) => `[a${i}]`).join('') + `amix=inputs=${parts.length}:normalize=0[o]`;
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...inputs, '-filter_complex', filter, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, `${name}.wav`)]);
+  return { strokes, speech };
+}
+
+// Boxes of the named things (Spark, cached), then the voice and the timed strokes.
+async function prepare(name: string, scene: Scene): Promise<Clip> {
+  const json = join(clipDir, `${name}.json`);
+  if (existsSync(json)) return JSON.parse(readFileSync(json, 'utf8')) as Clip;
+  const boxes = new Map<string, number[]>();
+  for (const [img, marks] of [[scene.image, scene.marks.filter((m) => !m.on)], [scene.ref, scene.marks.filter((m) => m.on)]] as const) {
+    const names = marks.filter((m) => m.object).map((m) => m.object!);
+    if (img && names.length) for (const [k, v] of await locate(readFileSync(img), names)) boxes.set(k, v);
+  }
+  const box = (m: Mark) => m.box ?? boxes.get(m.object!)!;
+  const { strokes, speech } = await voiceClip(name, readFileSync(scene.image), scene.marks.map((m) => ({ say: m.say, box: box(m) })));
+  const shaped = strokes.map((s, i) => {
+    const m = scene.marks[i];
+    const [x0, y0, x1, y1] = box(m);
+    const [t0, t1] = [s.points[0].t, s.points.at(-1)!.t];
+    let points: Point[] = s.points;
+    if (m.shape === 'tap') points = [{ x: Math.round((x0 + x1) / 2), y: Math.round((y0 + y1) / 2), t: t0 }, { x: Math.round((x0 + x1) / 2) + 1, y: Math.round((y0 + y1) / 2), t: t0 + 70 }];
+    if (m.shape === 'contour') {
+      const n = 14, segs = SPIKES.length - 1, end = t1 + 900;
+      points = [];
+      for (let k = 0; k < segs * n; k++) {
+        const [a, b] = [SPIKES[Math.floor(k / n)], SPIKES[Math.floor(k / n) + 1]], u = (k % n) / n;
+        points.push({ x: Math.round(a[0] + (b[0] - a[0]) * u), y: Math.round(a[1] + (b[1] - a[1]) * u), t: Math.round(t0 + ((end - t0) * k) / (segs * n)) });
+      }
+      points.push({ x: SPIKES.at(-1)![0], y: SPIKES.at(-1)![1], t: end });
+    }
+    return { mark: s.mark, points, ...(m.on ? { on: m.on } : {}) };
+  });
+  writeFileSync(json, JSON.stringify({ strokes: shaped, speech }, null, 1));
+  return { strokes: shaped, speech };
+}
+
+// ---------- recording: Chrome's screencast → mp4 ----------
+
+class Recorder {
+  private frames: { file: string; t: number }[] = [];
+  private dir = '';
+  private n = 0;
+  private cdp: CDPSession;
+  constructor(cdp: CDPSession) {
+    this.cdp = cdp;
+    cdp.on('Page.screencastFrame', async (f: any) => {
+      if (this.dir) {
+        const file = join(this.dir, `${String(this.n++).padStart(6, '0')}.jpg`);
+        writeFileSync(file, Buffer.from(f.data, 'base64'));
+        this.frames.push({ file, t: f.metadata.timestamp });
+      }
+      await cdp.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => {});
+    });
+  }
+  async start(name: string) {
+    this.dir = join(out, `frames-${name}`);
+    rmSync(this.dir, { recursive: true, force: true });
+    mkdirSync(this.dir, { recursive: true });
+    this.frames = [];
+    this.n = 0;
+    await this.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 90, maxWidth: W, maxHeight: H });
+    log(`● rec ${name}`);
+  }
+  async stop(name: string) {
+    await this.cdp.send('Page.stopScreencast');
+    const end = Date.now() / 1000;
+    const dir = this.dir;
+    this.dir = '';
+    if (this.frames.length < 2) throw new Error(`${name}: no frames recorded`);
+    // Each frame lasts until the next one (the screencast sends frames only on change).
+    const list = this.frames.map((f, i) => `file '${f.file}'\nduration ${Math.max(0.001, (this.frames[i + 1]?.t ?? end) - f.t).toFixed(3)}`).join('\n') + `\nfile '${this.frames.at(-1)!.file}'\n`;
+    writeFileSync(join(dir, 'list.txt'), list);
+    const mp4 = join(out, `${name}.mp4`);
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', join(dir, 'list.txt'), '-vf', 'fps=30,format=yuv420p', '-c:v', 'libx264', '-crf', '18', '-movflags', '+faststart', mp4]);
+    rmSync(dir, { recursive: true, force: true });
+    const secs = this.frames.at(-1)!.t - this.frames[0].t;
+    log(`■ ${name}.mp4 (${this.frames.length} frames, ${secs.toFixed(1)} s)`);
+    return this.frames[0].t; // the clip's time zero (seconds, like Date.now() / 1000)
+  }
+}
+
+// ---------- the page: fake microphone, pen dot ----------
+
+const INIT = () => {
+  // The voice clip plays into this stream; the app records it as the microphone.
+  const w = window as any;
+  w.__mic = () => {
+    w.__ac ??= new AudioContext();
+    w.__dest ??= w.__ac.createMediaStreamDestination();
+    return w.__dest.stream;
+  };
+  navigator.mediaDevices.getUserMedia = async () => w.__mic();
+  w.__play = async (b64: string, offsetMs: number) => {
+    w.__mic();
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const audio = await w.__ac.decodeAudioData(bytes.buffer);
+    await w.__ac.resume();
+    const src = w.__ac.createBufferSource();
+    src.buffer = audio;
+    src.connect(w.__dest);
+    src.start(0, offsetMs / 1000);
+    return audio.duration * 1000;
+  };
+  // A dot that follows the pen or mouse (screen recordings show no cursor).
+  addEventListener('DOMContentLoaded', () => {
+    const dot = document.createElement('div');
+    Object.assign(dot.style, { position: 'fixed', left: '0', top: '0', width: '14px', height: '14px', margin: '-7px 0 0 -7px', borderRadius: '50%', border: '2px solid white', boxShadow: '0 0 0 1px rgba(0,0,0,.6), 0 2px 6px rgba(0,0,0,.4)', pointerEvents: 'none', zIndex: '2147483647', opacity: '0', transition: 'opacity .2s, background .1s' });
+    document.body.appendChild(dot);
+    const at = (e: PointerEvent) => {
+      dot.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+      dot.style.opacity = '1';
+    };
+    addEventListener('pointermove', at, true);
+    addEventListener('pointerdown', (e) => (at(e), (dot.style.background = 'rgba(255,255,255,.85)')), true);
+    addEventListener('pointerup', () => (dot.style.background = 'transparent'), true);
+  });
+};
+
+// Where an image pixel is on screen: the picture (its framed box) or the open reference.
+async function toScreen(page: Page, on: 'target' | 'ref', imgW: number, imgH: number) {
+  return page.evaluate(([on, nw, nh]) => {
+    const canvases = [...document.querySelectorAll('canvas')];
+    const ring = (c: Element) => [...c.parentElement!.children].find((e) => typeof (e as HTMLElement).className === 'string' && (e as HTMLElement).className.includes('ring-1'));
+    const target = canvases.find((c) => ring(c))!;
+    if (on === 'target') {
+      const r = ring(target)!.getBoundingClientRect();
+      return { x: r.left, y: r.top, k: r.width / (nw as number) };
+    }
+    // The reference canvas fits its image inside --stage-padding on every side (editor/engine.ts).
+    const c = canvases.find((x) => x !== target)!;
+    const b = c.getBoundingClientRect();
+    const pad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--stage-padding')) * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const k = Math.min((b.width - 2 * pad) / (nw as number), (b.height - 2 * pad) / (nh as number));
+    return { x: b.left + (b.width - (nw as number) * k) / 2, y: b.top + pad + (b.height - 2 * pad - (nh as number) * k) / 2, k };
+  }, [on, imgW, imgH] as const);
+}
+
+const size = (file: string) => {
+  const out = execFileSync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file]).toString();
+  return [Number(/pixelWidth: (\d+)/.exec(out)![1]), Number(/pixelHeight: (\d+)/.exec(out)![1])];
+};
+
+// ---------- 2D scenes ----------
+
+async function openPicture(page: Page, file: string) {
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.locator('input[type=file][accept="image/*"]').first().setInputFiles(file);
+  await page.waitForSelector('[aria-label="Hold to talk"]');
+  await sleep(17_000); // the background part names, as when someone looks at the picture first
+}
+
+async function scene2d(page: Page, cdp: CDPSession, rec: Recorder, name: string) {
+  const scene = SCENES[name];
+  const clip = await prepare(name, scene);
+  const wav = readFileSync(join(clipDir, `${name}.wav`)).toString('base64');
+  const [iw, ih] = size(scene.image);
+  const [rw, rh] = scene.ref ? size(scene.ref) : [0, 0];
+  await openPicture(page, scene.image);
+  await rec.start(name);
+  await sleep(1200);
+  if (scene.ref) {
+    // The reference is dropped onto the picture (it opens beside it).
+    await page.evaluate(async (url) => {
+      const blob = await (await fetch(url)).blob();
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'reference.jpg', { type: blob.type }));
+      const stage = [...document.querySelectorAll('canvas')].map((c) => c.parentElement!).find((p) => p.className.includes('canvas-dots'))!;
+      stage.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      stage.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }, `/api/samples/tasks/${scene.ref.split('/').pop()}`);
+    await sleep(2000);
+  }
+  const target = await toScreen(page, 'target', iw, ih);
+  const ref = scene.ref ? await toScreen(page, 'ref', rw, rh) : null;
+  const pen = (type: string, x: number, y: number, buttons: number) => cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons, clickCount: 1, pointerType: 'pen' } as any);
+  // Draw at the clip's timing; the voice starts with the first stroke (that is when recording starts).
+  const lead = clip.strokes[0].points[0].t;
+  const t0 = Date.now() - lead;
+  let audioMs = 0, voiceAt = 0;
+  for (const [i, s] of clip.strokes.entries()) {
+    const f = s.on === 'ref' ? ref! : target;
+    const P = (p: Point) => [f.x + p.x * f.k, f.y + p.y * f.k] as const;
+    await sleep(s.points[0].t - (Date.now() - t0));
+    await pen('mousePressed', ...P(s.points[0]), 1);
+    if (i === 0) {
+      voiceAt = Date.now() / 1000 - lead / 1000; // when the voice track's time zero is, had it played from its start
+      audioMs = await page.evaluate(([b64, off]) => (window as any).__play(b64, off), [wav, lead] as const);
+    }
+    for (const p of s.points.slice(1)) {
+      await sleep(p.t - (Date.now() - t0));
+      await pen('mouseMoved', ...P(p), 1);
+    }
+    await pen('mouseReleased', ...P(s.points.at(-1)!), 0);
+  }
+  await sleep(audioMs + 400 - (Date.now() - t0));
+  // Send: a tap on the talk button (recording began with the first stroke).
+  const talk = page.locator('[aria-label="Hold to talk"]');
+  const b = (await talk.boundingBox())!;
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 8 });
+  await page.mouse.down();
+  await sleep(90);
+  await page.mouse.up();
+  const t1 = Date.now();
+  const releaseAt = t1 / 1000;
+  const outcome = await Promise.race([
+    page.waitForSelector('button:has-text("Keep")', { timeout: 150_000 }).then(() => 'result'),
+    page.waitForSelector('text=That edit didn’t come through', { timeout: 150_000 }).then(() => 'failed'),
+    page.waitForSelector('text=Didn’t hear anything', { timeout: 150_000 }).then(() => 'no speech'),
+  ]).catch(() => 'timeout');
+  const resultAt = Date.now() / 1000;
+  log(`${name}: ${outcome} ${((Date.now() - t1) / 1000).toFixed(1)} s after release`);
+  await sleep(3500);
+  const zero = await rec.stop(name);
+  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: releaseAt - zero, result: resultAt - zero, speech: clip.speech }, null, 1));
+  return outcome;
+}
+
+// The before/after hold on the last result: press the picture, let go, again.
+async function sceneHold(page: Page, rec: Recorder) {
+  await rec.start('hold');
+  const box = (await page.locator('img[alt="After"]').boundingBox())!;
+  const [x, y] = [box.x + box.width * 0.55, box.y + box.height * 0.5];
+  await page.mouse.move(x, y, { steps: 10 });
+  for (let i = 0; i < 2; i++) {
+    await sleep(1200);
+    await page.mouse.down();
+    await sleep(1800);
+    await page.mouse.up();
+  }
+  await sleep(1500);
+  await rec.stop('hold');
+  return 'result';
+}
+
+// ---------- 3D: the chair from the front and the side, then a turn around it ----------
+
+async function sceneChair(page: Page, rec: Recorder) {
+  // 3D through the mode switch (on camera), from a fresh page.
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.locator('[role=radio][aria-label="3D"]').click();
+  await page.waitForFunction(() => !!(window as any).replayChair && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
+  await sleep(1500);
+  // The voice for the edit: the first line while the front is drawn, the second
+  // with the side (replayChair settles 0.75 s per view, ~2.9 s of front strokes).
+  const lines = [{ say: 'It’s a chair.', at: 0.85 }, { say: 'The back goes like this.', at: 4.45 }];
+  for (const [i, l] of lines.entries()) execFileSync('say', ['-v', VOICE, '-o', join(clipDir, `chair-${i}.aiff`), l.say.replace('’', "'")]);
+  const speech: Spoken[] = [];
+  for (const [i, l] of lines.entries()) speech.push({ at: l.at, dur: (await audioDurationMs(join(clipDir, `chair-${i}.aiff`))) / 1000, say: l.say });
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...lines.flatMap((_, i) => ['-i', join(clipDir, `chair-${i}.aiff`)]), '-filter_complex', `${lines.map((l, i) => `[${i}:a]adelay=${Math.round(l.at * 1000)}|${Math.round(l.at * 1000)}[a${i}]`).join(';')};[a0][a1]amix=inputs=2:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'chair.wav')]);
+  await rec.start('chair');
+  await sleep(1000);
+  const t1 = Date.now();
+  const voiceAt = t1 / 1000;
+  await page.evaluate(() => (window as any).replayChair('It’s a chair, the back goes like this.').then(() => ((window as any).__built = true)));
+  const ok = await page.waitForFunction(() => (window as any).__built === true, undefined, { timeout: 150_000 }).then(() => true, () => false);
+  const parts = await page.evaluate(() => (window as any).builder?.parts?.length ?? 0);
+  log(`chair: ${ok ? `${parts} parts` : 'timeout'} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+  const builtAt = Date.now() / 1000;
+  await sleep(9000); // the model turns slowly after it is built
+  const zero = await rec.stop('chair');
+  writeFileSync(join(out, 'chair.timing.json'), JSON.stringify({ voice: join(clipDir, 'chair.wav'), voiceAt: voiceAt - zero, release: 11 - 0, result: builtAt - zero, speech }, null, 1));
+  return ok && parts ? 'result' : 'failed';
+}
+
+// ---------- run ----------
+
+const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'three', 'hold', 'chair'];
+const browser = await chromium.launch({
+  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  headless: !process.env.HEADED,
+  args: ['--autoplay-policy=no-user-gesture-required', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--hide-scrollbars'],
+});
+const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1, colorScheme: 'dark' });
+await page.addInitScript(INIT);
+const cdp = await page.context().newCDPSession(page);
+const rec = new Recorder(cdp);
+const results: Record<string, string> = {};
+for (const name of wanted) {
+  try {
+    if (name === 'hold') results[name] = results.three === 'result' ? await sceneHold(page, rec) : 'skipped (no result from "three")';
+    else if (name === 'chair') results[name] = await sceneChair(page, rec);
+    else results[name] = await scene2d(page, cdp, rec, name);
+  } catch (e: any) {
+    results[name] = `error: ${String(e?.message ?? e).split('\n')[0]}`;
+    log(`${name}:`, results[name]);
+    await cdp.send('Page.stopScreencast').catch(() => {});
+  }
+}
+await browser.close();
+console.log('\nclips:', JSON.stringify(results, null, 1));
+console.log(readdirSync(out).filter((f) => f.endsWith('.mp4')).map((f) => `out/demo/${f}`).join('\n'));

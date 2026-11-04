@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import type { Stage } from './scene';
+import { themeColor, type Stage } from './scene';
 import { fitShape, type Shape } from './quickshape';
 
 export type PlaneMode = 'view' | 'ground';
@@ -27,8 +27,10 @@ export type Stroke = {
   line: Line2;
   shape?: Shape['kind']; // QuickShape snapped it to this
   raw?: { points: THREE.Vector3[]; times: number[] }; // the stroke as drawn, for undo
+  pen?: 'point' | 'shape'; // the pen mode it was drawn with, when not auto
 };
 
+// Pencil strokes are the theme's foreground (dark on light, light on dark).
 const INK = new THREE.Color('#25221f');
 const SNAP_PX = 16;
 const HOLD_MS = 400; // QuickShape: hold the pen still this long at the end of a stroke
@@ -74,7 +76,9 @@ function gridTexture() {
 export class Sketch {
   strokes: Stroke[] = [];
   mode: PlaneMode = 'view';
+  pen: 'auto' | 'point' | 'shape' = 'auto'; // Point: marks an existing part; Shape: draws geometry
   round = 1;
+  onStroke: () => void = () => {}; // a stroke was finished by hand
   onChange: () => void = () => {};
   onSnap: (kind: Shape['kind']) => void = () => {};
   private nextId = 1;
@@ -94,6 +98,7 @@ export class Sketch {
   private vizTarget = 0;
 
   constructor(private stage: Stage) {
+    this.applyTheme();
     this.planeViz = new THREE.Mesh(
       new THREE.PlaneGeometry(1.8, 1.8),
       new THREE.MeshBasicMaterial({ map: gridTexture(), transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 }),
@@ -211,7 +216,7 @@ export class Sketch {
       screen: [new THREE.Vector2(e.clientX, e.clientY)],
       holdAt: new THREE.Vector2(e.clientX, e.clientY),
       holdTimer: 0,
-      stroke: { id: this.nextId++, points: [p], times: [Date.now()], plane: surface ? 'surface' : this.mode, normal: plane.normal.clone(), viewDir, closed: false, round: this.round, line: null },
+      stroke: { id: this.nextId++, points: [p], times: [Date.now()], plane: surface ? 'surface' : this.mode, normal: plane.normal.clone(), viewDir, closed: false, round: this.round, line: null, ...(this.pen !== 'auto' ? { pen: this.pen } : {}) },
     };
     this.showPlane(plane, surface ? p : anchor, 0.7);
   }
@@ -322,6 +327,7 @@ export class Sketch {
     this.stage.sketch.add(s.line);
     this.strokes.push(s as Stroke);
     this.onChange();
+    this.onStroke();
   }
 
   // Strokes not yet explained by a build.
@@ -378,6 +384,21 @@ export class Sketch {
 
   setVisible(v: boolean) {
     this.stage.sketch.visible = v;
+  }
+
+  // The theme changed: the ink follows (settled strokes keep their fade).
+  applyTheme() {
+    INK.copy(themeColor('--foreground', '#25221f'));
+    for (const s of this.strokes) (s.line.material as LineMaterial).color.copy(INK);
+  }
+
+  // Put back a stroke that Undo took away (Redo).
+  restore(s: Stroke) {
+    s.line = makeLine(s.points, INK, 3);
+    s.round = this.round;
+    this.stage.sketch.add(s.line);
+    this.strokes.push(s);
+    this.onChange();
   }
 
   // Add a stroke from code (tests and the scripted demo).

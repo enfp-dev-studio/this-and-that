@@ -87,8 +87,13 @@ export function drawStrokes(g: Ctx, strokes: Stroke[], w: number, h: number, sca
     const pts = s.points.filter((p) => p.t <= until);
     if (!pts.length) continue;
     const c = colorOf(s.mark);
+    // A tap (a dot) becomes a small ring centred on it: in a dense picture a
+    // dot beside its number badge can read as the neighbouring object.
+    const b = strokeBox({ mark: s.mark, points: pts });
+    const tap = Math.max(b.right - b.left, b.bottom - b.top) * scale < unit * 2;
     const path = () => {
       g.beginPath();
+      if (tap) return g.arc(pts[0].x * scale, pts[0].y * scale, unit * 5, 0, Math.PI * 2);
       pts.forEach((p, i) => (i ? g.lineTo(p.x * scale, p.y * scale) : g.moveTo(p.x * scale, p.y * scale)));
       if (pts.length === 1) g.lineTo(pts[0].x * scale + 0.1, pts[0].y * scale);
     };
@@ -102,8 +107,10 @@ export function drawStrokes(g: Ctx, strokes: Stroke[], w: number, h: number, sca
     g.stroke();
     const p0 = pts[0];
     const r = unit * 2.6;
-    const bx = Math.min(Math.max(p0.x * scale, r), w - r);
-    const by = Math.min(Math.max(p0.y * scale - r * 1.3, r), h - r);
+    // A tap's badge sits just outside its ring, up and to the left.
+    const off = tap ? (unit * 5 + r * 0.4) * 0.71 : 0;
+    const bx = Math.min(Math.max(p0.x * scale - off, r), w - r);
+    const by = Math.min(Math.max(p0.y * scale - (tap ? off : r * 1.3), r), h - r);
     g.beginPath();
     g.arc(bx, by, r, 0, Math.PI * 2);
     g.fillStyle = c;

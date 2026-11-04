@@ -16,6 +16,7 @@ export type StrokeInfo = {
   color: string;
   drawnFrom: [number, number, number]; // view direction while drawing (camera → scene)
   plane: 'view' | 'ground' | 'surface';
+  pen?: 'point' | 'shape'; // forced by the user: point = marks an existing part, shape = draws geometry
   bbox: { min: number[]; max: number[] };
   points: number[][]; // a few samples along the stroke
   closed: boolean;
@@ -78,6 +79,7 @@ Parts:
 - extrude: a flat slab whose outline is one closed stroke (a house's gable wall, a sign, a leaf, a letter). profile = that stroke id, size[2] = thickness, center = where the outline's middle should end up (move it to the right depth); its rotation is ignored. profile = -1 for every other primitive.
 - color: a plausible real color as #rrggbb (the stroke colors in the images are only labels, never the object's colors) (wood brown, red roof, green leaves), or the color the user asks for. material: the closest hint.
 - strokes: the ids of the strokes this part explains. Every stroke is explained by some part, except pure gestures (a circle around a part or an arrow, meaning "this one").
+- A stroke with "pen": "point" was drawn with the Point pen: it only marks an existing part or place ("this one"), never new geometry. "pen": "shape" (Shape pen) means it draws geometry to follow, even over an existing part. Without "pen", decide from the drawing and the words.
 - Follow the drawing: lines drawn as separate posts, legs or rails become separate thin parts; a closed outline becomes a panel or slab. Anything the user names (roof, backrest, handle, door) gets its own part, so it can be colored and edited.
 - Complete what a real object of that kind needs even if only one side was drawn (the hidden legs of a chair, mirrored), but keep it simple: 3 to 16 parts. Parts should touch where they connect; nothing floats and nothing is left open (a gable roof needs its triangular gable ends: an extrude of the outline stroke, or a box rotated 45° about the ridge axis).
 - Editing: return the full updated list. Keep unchanged parts exactly as they were (same name, same numbers). "this" / "here" / "이거" / "여기" means the part or place the new strokes touch.
@@ -147,6 +149,7 @@ export async function perceive(req: { views: View[]; strokes: StrokeInfo[]; tran
     bboxMin: s.bbox.min.map(r3),
     bboxMax: s.bbox.max.map(r3),
     points: s.points.map((p) => p.map(r3)),
+    ...(s.pen ? { pen: s.pen } : {}),
   }));
   content.push(textPart(`Strokes (${strokes.length}):\n${JSON.stringify(strokes)}`));
   if (req.parts.length) content.push(textPart(`Current model (edit it):\n${JSON.stringify(req.parts)}`));

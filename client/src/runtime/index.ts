@@ -200,7 +200,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   if (wav) saveBlob(`${dir}/voice.wav`, wav);
   // No voice, no edit. From a silent video Spark invents a request ("remove
   // the lamp, make the cat bigger"), and Voice Transcribe hears "Yeah".
-  if (!prior?.edits && (!pcm?.length || maxVolumeDb(pcm) < -40)) {
+  if (!prior?.transcript && !prior?.edits && (!pcm?.length || maxVolumeDb(pcm) < -40)) {
     live?.close();
     throw new Error('no speech');
   }
@@ -513,7 +513,8 @@ export const runtime = {
       }),
       pinned: (body.pinned ?? []).flatMap((id) => images.get(id) ?? []),
     };
-    const prior = body.retryOf ? priors.get(body.retryOf) : undefined;
+    // Typed instead of said (the keyboard fallback): the text is the transcript.
+    const prior = body.retryOf ? priors.get(body.retryOf) : body.text ? { transcript: body.text } : undefined;
     runJob(job, img, strokes, raw.map((s) => s.markId), body.pcm ?? null, opts, body.asr, refs, prior).catch(failed);
     return { id: job.id };
   },

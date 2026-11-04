@@ -3,6 +3,7 @@ import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { refLetter } from '@/components/ref-panel';
 
@@ -17,11 +18,10 @@ export function RefThumbs() {
       {s.refs.map((r, i) => (
         <Tooltip key={r.id}>
           <TooltipTrigger asChild>
-            <button
-              className={cn(
-                'relative overflow-hidden rounded-md border bg-card shadow-lg outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                r.id === s.activeRef ? 'ring-2 ring-primary' : 'opacity-80 hover:opacity-100',
-              )}
+            <Button
+              variant="ghost"
+              size="thumb"
+              className={cn('relative bg-card', r.id === s.activeRef ? 'ring-2 ring-primary' : 'opacity-80 hover:opacity-100')}
               onClick={() => editor.openRef(r.id === s.activeRef ? null : r.id)}
               aria-label={`Reference ${refLetter(i)}`}
             >
@@ -30,7 +30,7 @@ export function RefThumbs() {
                 {refLetter(i)}
                 {r.pinned && <Pin />}
               </Badge>
-            </button>
+            </Button>
           </TooltipTrigger>
           <TooltipContent side="right">{r.id === s.activeRef ? 'Close' : 'Open to mark it'}{r.pinned ? ' · pinned to every edit' : ''}</TooltipContent>
         </Tooltip>

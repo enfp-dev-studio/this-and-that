@@ -32,13 +32,20 @@ export function strokesSvg(strokes: Stroke[], w: number, h: number, scale = 1, u
     const pts = s.points.filter((p) => p.t <= until);
     if (!pts.length) continue;
     const c = colorOf(s.mark);
-    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${(p.x * scale).toFixed(1)} ${(p.y * scale).toFixed(1)}`).join('');
+    // A tap (a dot) becomes a small ring centred on it: in a dense picture a
+    // dot beside its number badge can read as the neighbouring object.
+    const b = strokeBox({ mark: s.mark, points: pts });
+    const tap = Math.max(b.right - b.left, b.bottom - b.top) * scale < unit * 2;
+    const ring = (r: number) => `M${(pts[0].x * scale - r).toFixed(1)} ${(pts[0].y * scale).toFixed(1)}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`;
+    const d = tap ? ring(unit * 5) : pts.map((p, i) => `${i ? 'L' : 'M'}${(p.x * scale).toFixed(1)} ${(p.y * scale).toFixed(1)}`).join('');
     parts.push(`<path d="${d}" fill="none" stroke="white" stroke-opacity="0.8" stroke-width="${unit * 1.6}" stroke-linecap="round" stroke-linejoin="round"/>`);
     parts.push(`<path d="${d}" fill="none" stroke="${c}" stroke-width="${unit}" stroke-linecap="round" stroke-linejoin="round"/>`);
     const p0 = pts[0];
     const r = unit * 2.6;
-    const bx = Math.min(Math.max(p0.x * scale, r), w - r);
-    const by = Math.min(Math.max(p0.y * scale - r * 1.3, r), h - r);
+    // A tap's badge sits just outside its ring, up and to the left.
+    const off = tap ? (unit * 5 + r * 0.4) * 0.71 : 0;
+    const bx = Math.min(Math.max(p0.x * scale - off, r), w - r);
+    const by = Math.min(Math.max(p0.y * scale - (tap ? off : r * 1.3), r), h - r);
     parts.push(`<circle cx="${bx}" cy="${by}" r="${r}" fill="${c}" stroke="white" stroke-width="${unit * 0.5}"/>`);
     parts.push(`<text x="${bx}" y="${by + r * 0.38}" font-size="${r * 1.15}" font-family="Helvetica, Arial, sans-serif" font-weight="bold" fill="white" text-anchor="middle">${s.mark}</text>`);
     if (pts.length < s.points.length) tip = pts.at(-1);

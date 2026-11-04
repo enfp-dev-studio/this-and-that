@@ -11,7 +11,7 @@ function infiniteGrid() {
     new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
-      uniforms: { uColor: { value: new THREE.Color('#b9b0a0') } },
+      uniforms: { uColor: { value: themeColor('--grid', '#b9b0a0') } },
       vertexShader: `varying vec3 vPos; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vPos = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
       fragmentShader: `uniform vec3 uColor; varying vec3 vPos;
         float line(float size) { vec2 c = vPos.xz / size; vec2 g = abs(fract(c - 0.5) - 0.5) / fwidth(c); return 1.0 - min(min(g.x, g.y), 1.0); }
@@ -30,7 +30,7 @@ function infiniteGrid() {
 }
 
 // A colour from theme.css (any CSS colour) for three.js.
-function themeColor(name: string, fallback: string) {
+export function themeColor(name: string, fallback: string) {
   const g = document.createElement('canvas').getContext('2d')!;
   g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
   g.fillRect(0, 0, 1, 1);
@@ -56,7 +56,7 @@ export class Stage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     host.appendChild(this.renderer.domElement);
-    this.scene.background = themeColor('--viewport', '#f3efe6');
+    this.applyTheme();
 
     this.camera.position.set(0, 0.75, 3.4);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -101,6 +101,13 @@ export class Stage {
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
     this.renderer.setAnimationLoop((now) => this.frame(now));
+  }
+
+  // The scene follows the app's theme (light or dark), like the image mode's canvas.
+  applyTheme() {
+    this.scene.background = themeColor('--canvas', '#f3efe6');
+    const floor = this.helpers.getObjectByName('floor') as THREE.Mesh | undefined;
+    if (floor) ((floor.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color).copy(themeColor('--grid', '#b9b0a0'));
   }
 
   onTick(f: (now: number) => void) {

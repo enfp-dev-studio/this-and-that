@@ -45,8 +45,8 @@ export function App() {
       ) : (
         <>
           <div className="absolute inset-0 flex">
-            {s.activeRef && <RefPanel key={s.activeRef} />}
             <Stage />
+            {s.activeRef && <RefPanel key={s.activeRef} />}
           </div>
           <ImageChrome onMode={switchMode} />
         </>

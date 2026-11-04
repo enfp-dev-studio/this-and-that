@@ -1,4 +1,4 @@
-import { Box, Download, FlaskConical, ImageIcon, PanelRight, Redo2, Undo2 } from 'lucide-react';
+import { Box, Download, FlaskConical, ImageIcon, Moon, PanelRight, Redo2, Sun, Undo2 } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { LAB } from '@/lab';
@@ -14,13 +14,15 @@ import { SidePanel } from '@/components/side-panel';
 import { TasksMenu } from '@/components/tasks';
 import { OpenMenu } from '@/components/sample-menu';
 import { PenModes } from '@/components/toolbar';
+import { useTheme } from '@/components/theme-provider';
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export type AppMode = 'image' | '3d';
 
-// The app's chrome, the same in both modes: floating rounded panels over the
+// The app's chrome, the same in both modes: floating panels (rounded-lg) over the
 // full-bleed canvas. Left: the name and undo; centre: the mode and the
 // mode's drawing tools; right: files and the inspector.
-const PANEL = 'absolute top-4 z-10 flex items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur';
+const PANEL = 'absolute top-4 z-10 flex items-center gap-2 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur';
 
 export function Chrome({ left, center, right }: { left: React.ReactNode; center: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -47,7 +49,7 @@ export function IconButton({ label, onClick, disabled, children }: { label: stri
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-touch" className="rounded-full" onClick={onClick} disabled={disabled} aria-label={label}>
+        <Button variant="ghost" size="icon-touch" onClick={onClick} disabled={disabled} aria-label={label}>
           {children}
         </Button>
       </TooltipTrigger>
@@ -82,6 +84,52 @@ export function ModeSwitch({ mode, onMode, disabled }: { mode: AppMode; onMode: 
   );
 }
 
+// The inspector, the same in both modes: a sheet from the right, collapsed by default.
+export function Inspector({ tip, description, children }: { tip: string; description: string; children: React.ReactNode }) {
+  return (
+    <Sheet>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon-touch" aria-label="Details">
+              <PanelRight />
+            </Button>
+          </SheetTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{tip}</TooltipContent>
+      </Tooltip>
+      <SheetContent>
+        <SheetHeader>
+          <SheetTitle>Details</SheetTitle>
+          <SheetDescription>{description}</SheetDescription>
+        </SheetHeader>
+        {children}
+        <div className="p-4">
+          <ThemeCard />
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// Light or dark, for both modes.
+function ThemeCard() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Theme</CardTitle>
+        <CardDescription>{theme === 'dark' ? 'Dark' : 'Light'}</CardDescription>
+        <CardAction>
+          <Button variant="outline" size="icon-touch" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Switch theme">
+            {theme === 'dark' ? <Sun /> : <Moon />}
+          </Button>
+        </CardAction>
+      </CardHeader>
+    </Card>
+  );
+}
+
 // Image mode's chrome: undo/redo, the pen modes, Open / Export and the
 // inspector (history, references, what was understood), collapsed by default.
 export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
@@ -105,7 +153,7 @@ export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
         <>
           <ModeSwitch mode="image" onMode={onMode} disabled={busy} />
           <Separator orientation="vertical" />
-          <PenModes value={s.penMode} />
+          <PenModes value={s.penMode} onChange={(mode) => editor.setPenMode(mode)} />
         </>
       }
       right={
@@ -118,29 +166,18 @@ export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
             </Toggle>
           )}
           <OpenMenu disabled={busy} />
-          <Button variant="ghost" size="touch" className="rounded-full" onClick={() => editor.exportCurrent()} disabled={!s.versions.length}>
-            <Download />
-            Export
-          </Button>
-          <Sheet>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <SheetTrigger asChild>
-                  <Button variant="ghost" size="icon-touch" className="rounded-full" aria-label="Details">
-                    <PanelRight />
-                  </Button>
-                </SheetTrigger>
-              </TooltipTrigger>
-              <TooltipContent>History, references and details</TooltipContent>
-            </Tooltip>
-            <SheetContent>
-              <SheetHeader>
-                <SheetTitle>Details</SheetTitle>
-                <SheetDescription>History, references and what was understood.</SheetDescription>
-              </SheetHeader>
-              <SidePanel />
-            </SheetContent>
-          </Sheet>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="touch" onClick={() => editor.exportCurrent()} disabled={!s.versions.length}>
+                <Download />
+                Export
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Save the current picture</TooltipContent>
+          </Tooltip>
+          <Inspector tip="History, references and details" description="History, references and what was understood.">
+            <SidePanel />
+          </Inspector>
         </>
       }
     />

@@ -22,9 +22,8 @@ export function RefPanel() {
   if (!ref) return null;
 
   return (
-    <div className="flex w-(--ref-width) shrink-0 flex-col border-r bg-background">
-      <div className="h-(--chrome-height) shrink-0" />
-      <div className="flex items-center justify-between gap-2 border-y p-2">
+    <div className="absolute top-(--chrome-height) bottom-(--chrome-height) left-4 z-10 flex w-(--ref-width) flex-col overflow-hidden rounded-xl border bg-card/90 shadow-xl backdrop-blur">
+      <div className="flex items-center justify-between gap-2 border-b p-2">
         <Badge variant="secondary">Reference {refLetter(index)}</Badge>
         <div className="flex items-center gap-2">
           <Tooltip>

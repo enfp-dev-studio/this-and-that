@@ -166,7 +166,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   }
   // No voice, no edit. From a silent video Spark invents a request ("remove
   // the lamp, make the cat bigger"), and Voice Transcribe hears "Yeah".
-  if (!prior?.edits && (!wavPath || (await maxVolumeDb(wavPath)) < -40)) throw new Error('no speech');
+  if (!prior?.transcript && !prior?.edits && (!wavPath || (await maxVolumeDb(wavPath)) < -40)) throw new Error('no speech');
   // The realtime transcript (streamed while talking) if it arrives, else batch.
   const keywords = keywordsFor([img, ...refs.marks.map((m) => m.ref), ...refs.pinned]);
   const batch = () => T('transcribe', () => transcribe(readFileSync(wavPath!), trace, keywords)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null));
@@ -459,7 +459,8 @@ createServer(async (req, res) => {
       const opts: Opts = { ...DEFAULT_OPTS, ...(body.opts ?? {}) };
       const live = body.asrId ? liveAsr.get(String(body.asrId)) : undefined;
       if (live) liveAsr.delete(String(body.asrId));
-      const prior = body.retryOf ? priors.get(String(body.retryOf)) : undefined;
+      // Typed instead of said (the keyboard fallback): the text is the transcript.
+      const prior = body.retryOf ? priors.get(String(body.retryOf)) : body.text ? { transcript: String(body.text) } : undefined;
       runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts, live, refs, prior).catch((e) => {
         console.error(`[${job.id}]`, e);
         job.error = String(e.message ?? e);
