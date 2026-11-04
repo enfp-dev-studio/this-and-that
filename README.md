@@ -22,6 +22,12 @@ Edits that are all instant come back in about 6 s. Anything that needs Muse Imag
 
 Every job writes its per-stage timing and the token usage of each call to `out/jobs/<id>/trace.json`. `node --env-file=.env m0/bench.ts` replays the test clips the way the client sends them and prints both. At list prices one edit costs about $0.02–0.03: Muse Image $0.01 per image, SAM $0.0025 per mark, Spark ~3k input + ~0.7k output tokens (~$0.007), transcription $0.18 per hour of audio.
 
+## References, experiment mode and tasks
+
+- **References.** Add reference pictures in the side panel (a character sheet, a style, a detail like an ornament). An open reference sits beside the picture, and marks on it share the take and the numbering with marks on the picture: circle the ornament on the reference, circle the brooch on the picture, say "이거 이렇게 바꿔 줘". Spark watches both side by side and is told which mark is on which image; Muse Image gets crops around the reference marks, plus pinned references ("always include", e.g. a character sheet), as extra images. Only the picture is pasted.
+- **Experiment mode** (top bar) does the same task four ways: Type (typed request, whole-picture edit), Voice (spoken, no marks, whole picture), Pen (marks + voice) and Ref (marks + voice + reference). It logs per round the input time, characters or speech seconds, marks and wait, and per trial the rounds until Keep and the total, in a table you can export as JSON or CSV.
+- **Tasks** (top bar) loads five production-style corrections on our own illustrations: a brooch to match a reference ornament, a cuff's lace to match the other cuff, a more resolute expression kept on-model, a hairpin redesigned from a reference, and a six-finger hand. `scripts/make-illustrations.ts` and `scripts/make-tasks.ts` make the pictures with Muse Image; no other artists' work is used.
+
 ## Setup
 
 Needs Node 23.6+ (runs TypeScript directly), ffmpeg on the PATH, and a Meta model API key.
