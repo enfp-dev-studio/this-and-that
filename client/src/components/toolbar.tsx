@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Check, Eraser, Loader2, Mic, PenLine, Send, X } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
@@ -5,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Slider } from '@/components/ui/slider';
+import { Textarea } from '@/components/ui/textarea';
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { MarkBadge } from '@/components/mark-badge';
@@ -17,13 +19,18 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
   const working = s.mode === 'processing';
   const review = s.mode === 'review';
 
+  const typing = s.experiment && s.method === 'type';
   const status = recording
     ? s.marks
       ? 'Release or tap to send'
       : 'Listening… now draw'
     : working
       ? `Working… ${Math.round(s.elapsedMs / 1000)} s`
-      : 'Hold or tap, then draw and talk';
+      : typing
+        ? 'Type, then Enter to send'
+        : s.experiment && s.method === 'voice'
+          ? 'Hold or tap, then talk (no marks)'
+          : 'Hold or tap, then draw and talk';
   const slider = <Slider className="w-(--slider-width)" value={[split * 100]} onValueChange={([v]) => onSplit(v / 100)} aria-label="Before and after" />;
 
   return (
@@ -50,26 +57,30 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
 
       <Separator orientation="vertical" />
 
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            size="icon-xl"
-            variant={recording ? 'destructive' : 'default'}
-            className={cn(recording && 'animate-pulse')}
-            disabled={working}
-            aria-label="Hold to talk"
-            onPointerDown={(e) => {
-              e.currentTarget.setPointerCapture(e.pointerId);
-              editor.talkDown();
-            }}
-            onPointerUp={() => editor.talkUp()}
-            onContextMenu={(e) => e.preventDefault()}
-          >
-            {working ? <Loader2 className="animate-spin" /> : recording && s.marks ? <Send /> : <Mic />}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Hold to talk, or tap to start and tap to send</TooltipContent>
-      </Tooltip>
+      {typing ? (
+        <TypeBox busy={working} />
+      ) : (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon-xl"
+              variant={recording ? 'destructive' : 'default'}
+              className={cn(recording && 'animate-pulse')}
+              disabled={working}
+              aria-label="Hold to talk"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                editor.talkDown();
+              }}
+              onPointerUp={() => editor.talkUp()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              {working ? <Loader2 className="animate-spin" /> : recording && s.marks ? <Send /> : <Mic />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Hold to talk, or tap to start and tap to send</TooltipContent>
+        </Tooltip>
+      )}
 
       <Separator orientation="vertical" />
 
@@ -91,5 +102,43 @@ export function Toolbar({ split, onSplit }: { split: number; onSplit: (v: number
         <span className="w-(--status-width) text-sm text-muted-foreground tabular-nums">{status}</span>
       )}
     </div>
+  );
+}
+
+// Experiment, Type way: the request as text. Enter sends, Shift+Enter is a new line.
+function TypeBox({ busy }: { busy: boolean }) {
+  const [text, setText] = useState('');
+  const send = () => {
+    editor.submitText(text);
+    setText('');
+  };
+  return (
+    <form
+      className="flex items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
+      <Textarea
+        className="w-(--type-width)"
+        placeholder="Describe the change, e.g. “replace the crystal hairpin on her left with a crescent moon”"
+        value={text}
+        disabled={busy}
+        onChange={(e) => {
+          editor.markInput();
+          setText(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      />
+      <Button type="submit" size="icon-xl" disabled={busy || !text.trim()} aria-label="Send">
+        {busy ? <Loader2 className="animate-spin" /> : <Send />}
+      </Button>
+    </form>
   );
 }

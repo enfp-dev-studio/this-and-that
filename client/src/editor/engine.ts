@@ -7,6 +7,7 @@
 import { postJson } from './api';
 import { LiveAsr } from './live-asr';
 import { markColor, themeVar, themeLength, watchTheme } from './colors';
+import { loadTrials, saveTrials, type Method, type Round, type Trial } from './experiment';
 
 export type Point = { x: number; y: number; t: number };
 export type Stroke = {
@@ -44,6 +45,10 @@ export type Snapshot = {
   fit: Fit; // where the picture sits in its stage, CSS px
   refs: Ref[];
   activeRef: string | null; // the reference open beside the picture
+  experiment: boolean; // time each task done one of four ways
+  method: Method;
+  task: string; // the preset being done, or "Free"
+  trials: Trial[];
 };
 
 type Job = {
@@ -105,6 +110,10 @@ class Editor {
     fit: { x: 0, y: 0, w: 0, h: 0 },
     refs: [],
     activeRef: null,
+    experiment: false,
+    method: 'pen',
+    task: 'Free',
+    trials: loadTrials(),
   };
   private listeners = new Set<() => void>();
   onError: (message: string) => void = () => {};
@@ -123,6 +132,9 @@ class Editor {
   private live: LiveAsr | null = null;
   private pressedAt = 0;
   private startedByThisPress = false;
+  // Experiment timing: when this round's input began, and the round waiting for its result.
+  private inputAt: number | null = null;
+  private pending: (Omit<Round, 'waitMs' | 'kept'> & { sentAt: number }) | null = null;
 
   // ---------- store ----------
 
@@ -318,6 +330,7 @@ class Editor {
   private async pointerDown(surface: Surface, e: PointerEvent) {
     const { mode } = this.snapshot;
     if (!this.target.image || !surface.image || mode === 'processing' || mode === 'review') return;
+    if (this.snapshot.experiment && (this.snapshot.method === 'type' || this.snapshot.method === 'voice')) return;
     if (e.pointerType === 'pen' && !this.snapshot.penOnly) this.set({ penOnly: true });
     if (e.pointerType === 'touch' && this.snapshot.penOnly) return; // palm rejection once a stylus is in use
     surface.canvas!.setPointerCapture(e.pointerId);
@@ -445,6 +458,7 @@ class Editor {
   async keep() {
     const { result, versions, index } = this.snapshot;
     if (!result) return;
+    this.closeTrial();
     await this.show(result.url);
     this.set({ mode: 'idle', versions: [...versions.slice(0, index + 1), result], index: index + 1, result: null, compare: false, marks: 0, ...this.emptyPanel() });
     this.draw();
@@ -491,6 +505,7 @@ class Editor {
 
   private async startRecording() {
     if (this.snapshot.mode === 'recording') return;
+    this.markInput();
     this.strokes = [];
     this.chunks = [];
     this.set({ mode: 'recording', marks: 0, compare: false, ...this.emptyPanel() });
@@ -532,11 +547,17 @@ class Editor {
     this.recorder = null;
     const asrId = this.live ? this.live.stop() : Promise.resolve(null);
     this.live = null;
+    const speechMs = performance.now() - this.t0;
+    if (this.snapshot.experiment && this.snapshot.method === 'voice') {
+      this.markSent({ chars: 0, speechMs, marks: 0 });
+      return this.sendWhole({ audio: audio ? await blobToDataUrl(audio) : null, asrId: await asrId });
+    }
     if (!this.strokes.some((s) => !s.on)) {
       this.set({ mode: 'idle' });
       this.onNotice('Draw a mark on the picture while you talk.');
       return;
     }
+    this.markSent({ chars: 0, speechMs, marks: this.strokes.length });
     this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'active' }, elapsedMs: 0 });
     this.updateSamStep();
     this.animate();
@@ -553,6 +574,93 @@ class Editor {
     } catch (err) {
       this.fail((err as Error).message);
     }
+  }
+
+  // ---------- experiment ----------
+
+  setExperiment(on: boolean) {
+    this.set({ experiment: on, method: on ? this.snapshot.method : 'pen' });
+  }
+
+  setMethod(method: Method) {
+    if (this.snapshot.mode === 'recording' || this.snapshot.mode === 'processing') return;
+    this.set({ method });
+  }
+
+  setTask(task: string) {
+    this.set({ task });
+  }
+
+  // The typed way: the request as text, Muse Image edits the whole picture.
+  async submitText(text: string) {
+    if (!this.target.image || !text.trim() || this.snapshot.mode === 'processing' || this.snapshot.mode === 'recording') return;
+    if (this.snapshot.mode === 'review') await this.keep();
+    this.markInput();
+    this.markSent({ chars: text.trim().length, speechMs: 0, marks: 0 });
+    this.strokes = [];
+    this.set({ caption: text.trim() });
+    await this.sendWhole({ text: text.trim() });
+  }
+
+  // Type and Voice: no marks, the whole picture as Muse Image redraws it.
+  private async sendWhole(body: { text?: string; audio?: string | null; asrId?: string | null }) {
+    this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'done' }, elapsedMs: 0, marks: 0 });
+    try {
+      const { id } = await postJson('/api/jobs', { imageId: await this.current()!.imageId, whole: true, ...body });
+      await this.follow(id);
+    } catch (err) {
+      this.fail((err as Error).message);
+    }
+  }
+
+  // First keystroke or press of a round (and of a trial, if none is open).
+  markInput() {
+    if (!this.snapshot.experiment || this.inputAt !== null) return;
+    this.inputAt = performance.now();
+    const open = this.snapshot.trials.at(-1);
+    if (!open || open.totalMs !== null || open.method !== this.snapshot.method || open.task !== this.snapshot.task) {
+      const trial: Trial = { id: crypto.randomUUID().slice(0, 8), method: this.snapshot.method, task: this.snapshot.task, startedAt: Date.now(), rounds: [], totalMs: null };
+      this.setTrials([...this.snapshot.trials, trial]);
+    }
+  }
+
+  private markSent(r: { chars: number; speechMs: number; marks: number }) {
+    if (!this.snapshot.experiment || this.inputAt === null) return;
+    const now = performance.now();
+    this.pending = { inputMs: now - this.inputAt, ...r, sentAt: now };
+  }
+
+  private markResult() {
+    if (!this.pending) return;
+    const { sentAt, ...round } = this.pending;
+    this.pending = null;
+    this.inputAt = null;
+    this.updateOpenTrial((t) => ({ ...t, rounds: [...t.rounds, { ...round, waitMs: performance.now() - sentAt, kept: false }] }));
+  }
+
+  private closeTrial() {
+    if (!this.snapshot.experiment) return;
+    this.updateOpenTrial((t) => ({
+      ...t,
+      rounds: t.rounds.map((r, i) => (i === t.rounds.length - 1 ? { ...r, kept: true } : r)),
+      totalMs: Date.now() - t.startedAt,
+    }));
+  }
+
+  private updateOpenTrial(f: (t: Trial) => Trial) {
+    const trials = this.snapshot.trials;
+    const open = trials.at(-1);
+    if (!open || open.totalMs !== null) return;
+    this.setTrials([...trials.slice(0, -1), f(open)]);
+  }
+
+  private setTrials(trials: Trial[]) {
+    saveTrials(trials);
+    this.set({ trials });
+  }
+
+  clearTrials() {
+    this.setTrials([]);
   }
 
   // ---------- progress ----------
@@ -601,11 +709,14 @@ class Editor {
   private async showResult(resultImageId: string) {
     const result: Version = { url: `/api/images/${resultImageId}.jpg`, imageId: Promise.resolve(resultImageId) };
     await loadImage(result.url);
+    this.markResult();
     this.set({ mode: 'review', result, compare: true, steps: { sam: 'done', understand: 'done', edit: 'done', paste: 'done' } });
     this.draw();
   }
 
   private fail(message: string) {
+    this.pending = null;
+    this.inputAt = null;
     this.set({ mode: 'idle', steps: { ...NO_STEPS } });
     this.onError(message);
     this.draw();

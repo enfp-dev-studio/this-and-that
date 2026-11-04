@@ -15,8 +15,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
-import { transcribe, type Mask } from './meta.ts';
-import { editAreas, guideImage, museEdit, museEditSpoken, touchesAreas, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { editImage, transcribe, type Mask } from './meta.ts';
+import { editAreas, guideImage, museEdit, museEditSpoken, museParams, touchesAreas, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
@@ -271,6 +271,36 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   writeFileSync(join(dir, 'trace.json'), JSON.stringify({ totalMs, opts, asr: job.asrVia, speculation: job.speculation, localMarks: job.localMarks, spans: trace.spans, usage: trace.usage }, null, 2));
 }
 
+// The experiment's Type and Voice ways: no marks, the request as text (typed
+// or transcribed), and Muse Image's whole picture as the result (no paste).
+async function runWholeJob(job: Job, img: StoredImage, text: string | null, audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr) {
+  const dir = join(jobsDir, job.id);
+  mkdirSync(dir, { recursive: true });
+  const trace = new Trace();
+  const T = <R>(name: string, f: () => Promise<R>) => trace.time(name, f);
+  let request = text;
+  if (!request) {
+    request = live ? await T('transcribe (realtime end)', () => live.finish()) : null;
+    live?.close();
+    if (!request && audioBuf?.length) {
+      writeFileSync(join(dir, 'voice.webm'), audioBuf);
+      const wav = await toWav(join(dir, 'voice.webm'), join(dir, 'voice.wav'));
+      request = (await T('transcribe', () => transcribe(readFileSync(wav), trace))).transcript;
+    }
+  }
+  if (!request) throw new Error('nothing was said');
+  job.transcript = request;
+  job.stage = 'edit';
+  const { width, height } = img;
+  const edited = await T('muse edit (whole)', async () => editImage(request, [await sharp(img.png).jpeg({ quality: 92 }).toBuffer()], `${width}x${height}`, trace, museParams(opts.muse)));
+  writeFileSync(join(dir, 'edited.jpg'), edited);
+  const result = await T('store result', () => storeImage(edited, `${job.id}r`));
+  writeFileSync(join(dir, 'result.jpg'), await sharp(result.png).jpeg({ quality: 95 }).toBuffer());
+  job.resultImageId = result.id;
+  job.stage = 'done';
+  writeFileSync(join(dir, 'trace.json'), JSON.stringify({ totalMs: Date.now() - job.startedAt, whole: true, request, spans: trace.spans, usage: trace.usage }, null, 2));
+}
+
 // ---------- http ----------
 
 const decodeDataUrl = (s?: string) => (s ? Buffer.from(s.slice(s.indexOf(',') + 1), 'base64') : null);
@@ -327,6 +357,19 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       const upload = decodeDataUrl(body.image);
       const img = upload ? await storeImage(upload) : images.get(body.imageId);
+      if (body.whole) {
+        if (!img) return send(res, 400, { error: 'need an image' });
+        const job: Job = { id: newId(), stage: 'understand', startedAt: Date.now() };
+        jobs.set(job.id, job);
+        const live = body.asrId ? liveAsr.get(String(body.asrId)) : undefined;
+        if (live) liveAsr.delete(String(body.asrId));
+        runWholeJob(job, img, body.text ? String(body.text) : null, decodeDataUrl(body.audio), { ...DEFAULT_OPTS, ...(body.opts ?? {}) }, live).catch((e) => {
+          console.error(`[${job.id}]`, e);
+          job.error = String(e.message ?? e);
+          job.stage = 'error';
+        });
+        return send(res, 200, { id: job.id });
+      }
       const all: (Stroke & { markId?: string; on?: string })[] = body.strokes ?? [];
       const raw = all.filter((s) => !s.on);
       if (!img || !raw.length) return send(res, 400, { error: 'need an image and at least one mark on it' });

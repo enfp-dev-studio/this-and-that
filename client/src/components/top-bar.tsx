@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Columns2, ImageIcon, Moon, PanelRight, Redo2, Sun, Undo2, Upload } from 'lucide-react';
+import { Columns2, FlaskConical, ImageIcon, Moon, PanelRight, Redo2, Sun, Undo2, Upload } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { useTheme } from '@/components/theme-provider';
@@ -56,6 +56,15 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Toggle variant="outline" size="touch" pressed={s.experiment} onPressedChange={(on) => editor.setExperiment(on)} disabled={busy} aria-label="Experiment mode">
+              <FlaskConical />
+              Experiment
+            </Toggle>
+          </TooltipTrigger>
+          <TooltipContent>Do a task four ways and time each</TooltipContent>
+        </Tooltip>
         <input ref={file} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && editor.openFile(e.target.files[0])} />
         <Button variant="ghost" size="touch" onClick={() => file.current?.click()} disabled={busy}>
           <Upload />
