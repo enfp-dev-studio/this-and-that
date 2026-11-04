@@ -29,11 +29,11 @@ const buttonVariants = cva(
         "icon-sm": "size-8",
         "icon-lg": "size-10",
         // This & That: one touch scale for the tablet (44 px targets), used everywhere.
-        touch: "h-11 rounded-full px-4 has-[>svg]:px-3",
-        "icon-touch": "size-11 rounded-full",
+        touch: "h-11 px-4 has-[>svg]:px-3",
+        "icon-touch": "size-11",
         // A picture thumbnail you tap (the references beside the picture).
         thumb: "h-auto overflow-hidden rounded-md border p-0 shadow-lg",
-        // The hold-to-talk button.
+        // The hold-to-talk button: the one round control, by intent.
         "icon-xl": "size-16 rounded-full [&_svg:not([class*='size-'])]:size-7",
       },
     },

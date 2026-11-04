@@ -11,19 +11,19 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 type Hold = { onPointerDown: (e: React.PointerEvent) => void; onPointerUp: () => void; onPointerCancel: () => void };
 
-// No backdrop blur here: it would make each pill the anchor of the typing
+// No backdrop blur here: it would make each group the anchor of the typing
 // field, which belongs centred above the whole bar.
-const PILL = 'pointer-events-auto flex items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl';
+const GROUP = 'pointer-events-auto flex items-center gap-2 rounded-lg border bg-card/90 p-2 shadow-xl';
 
 // The bottom bar of both modes, in three slots: the talk button stays at the
-// centre, what applies now sits in pills to its left and right (so nothing
-// shifts it sideways), and typing opens in a pill above the bar.
+// centre, what applies now sits in groups to its left and right (so nothing
+// shifts it sideways), and typing opens just above the bar.
 export function BottomBar({ left, center, right }: { left?: React.ReactNode; center: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div className="pointer-events-none absolute bottom-(--toolbar-offset) left-1/2 grid w-(--bar-width) -translate-x-1/2 grid-cols-3 items-center gap-4">
-      <div className="flex justify-end">{left && <div className={PILL}>{left}</div>}</div>
+      <div className="flex justify-end">{left && <div className={GROUP}>{left}</div>}</div>
       <div className="pointer-events-auto flex justify-center">{center}</div>
-      <div className="flex justify-start">{right && <div className={PILL}>{right}</div>}</div>
+      <div className="flex justify-start">{right && <div className={GROUP}>{right}</div>}</div>
     </div>
   );
 }
@@ -174,7 +174,7 @@ export function TypeToggle({ placeholder, sendLabel, busy, onSend }: { placehold
       </Tooltip>
       {open && (
         <form
-          className="absolute bottom-full left-1/2 flex -translate-x-1/2 -translate-y-4 items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur"
+          className="absolute bottom-full left-1/2 flex -translate-x-1/2 -translate-y-4 items-center gap-2 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur"
           onSubmit={(e) => {
             e.preventDefault();
             send();

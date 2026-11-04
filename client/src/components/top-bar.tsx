@@ -18,10 +18,10 @@ import { Card, CardAction, CardDescription, CardHeader, CardTitle } from '@/comp
 
 export type AppMode = 'image' | '3d';
 
-// The app's chrome, the same in both modes: floating rounded panels over the
+// The app's chrome, the same in both modes: floating panels (rounded-lg) over the
 // full-bleed canvas. Left: the name and undo; centre: the mode and the
 // mode's drawing tools; right: files and the inspector.
-const PANEL = 'absolute top-4 z-10 flex items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur';
+const PANEL = 'absolute top-4 z-10 flex items-center gap-2 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur';
 
 export function Chrome({ left, center, right }: { left: React.ReactNode; center: React.ReactNode; right?: React.ReactNode }) {
   return (

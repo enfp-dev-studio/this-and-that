@@ -24,7 +24,7 @@ function ViewControls({ zoom }: { zoom: number }) {
     </Tooltip>
   );
   return (
-    <div className="absolute right-4 bottom-(--toolbar-offset) flex items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+    <div className="absolute right-4 bottom-(--toolbar-offset) flex items-center gap-2 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur">
       {tip('Zoom out', <Button variant="ghost" size="icon-touch" onClick={() => editor.zoomBy(1 / 1.25)} aria-label="Zoom out"><ZoomOut /></Button>)}
       {tip('Back to 100%: the picture fits the screen · wheel or pinch zooms, right-drag or two fingers pan', <Button variant="ghost" size="touch" className="tabular-nums" onClick={() => editor.fitView()} aria-label="Fit to screen">{Math.round(zoom * 100)}%</Button>)}
       {tip('Zoom in', <Button variant="ghost" size="icon-touch" onClick={() => editor.zoomBy(1.25)} aria-label="Zoom in"><ZoomIn /></Button>)}

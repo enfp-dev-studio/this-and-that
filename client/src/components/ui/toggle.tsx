@@ -21,8 +21,8 @@ const toggleVariants = cva(
         sm: "h-8 min-w-8 px-1.5",
         lg: "h-10 min-w-10 px-2.5",
         // This & That: the same touch scale as Button.
-        touch: "h-11 min-w-11 rounded-full px-3",
-        "icon-touch": "size-11 rounded-full",
+        touch: "h-11 min-w-11 px-3",
+        "icon-touch": "size-11",
       },
     },
     defaultVariants: {

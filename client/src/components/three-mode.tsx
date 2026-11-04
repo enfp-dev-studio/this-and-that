@@ -167,7 +167,7 @@ export function ThreeMode({ onMode }: { onMode: (mode: AppMode) => void }) {
       />
 
       {/* Where the image mode has its zoom: the views and zoom-to-fit. */}
-      <div className="absolute right-4 bottom-(--toolbar-offset) flex items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+      <div className="absolute right-4 bottom-(--toolbar-offset) flex items-center gap-2 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur">
         <DropdownMenu>
           <Tip label="Look from the front, the side, the top or at three quarters">
             <DropdownMenuTrigger asChild>

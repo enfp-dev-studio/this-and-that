@@ -54,7 +54,7 @@ export function FailNotice() {
     </span>
   );
   return (
-    <div role="alert" className="absolute top-(--chrome-height) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+    <div role="alert" className="absolute top-(--chrome-height) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-lg border bg-card/90 p-2 shadow-xl backdrop-blur">
       {LAB ? (
         <Tooltip>
           <TooltipTrigger asChild>{text}</TooltipTrigger>
