@@ -36,6 +36,12 @@ export function renderViews(stage: Stage, strokes: Stroke[], opts: { withModel: 
   scene.background = new THREE.Color('#ffffff');
   const restore: (() => void)[] = [];
   stage.helpers.visible = false;
+  // The renders keep the small ground grid Spark was tuned with (hidden live).
+  const grid = scene.getObjectByName('grid');
+  if (grid) {
+    grid.visible = true;
+    restore.push(() => (grid.visible = false));
+  }
   const sketchVisible = stage.sketch.visible;
   stage.sketch.visible = true;
   const modelVisible = stage.model.visible;

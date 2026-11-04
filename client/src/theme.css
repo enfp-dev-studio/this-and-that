@@ -12,7 +12,7 @@
  *   layout: --panel-width, --toolbar-offset, --stage-padding,
  *           --toolbar-clearance, --status-width, --slider-width, --card-width, --ref-width, --type-width, --thumb-width,
  *           --caption-offset, --caption-width, --callout-width, --ref-thumb-width,
- *           --canvas-dot-gap
+ *           --canvas-dot-gap, --chrome-height (the floating top panels; what sits below them starts here)
  */
 
 :root {
@@ -21,6 +21,7 @@
   --panel-width: 20rem;
   --toolbar-offset: 1.5rem;
   --stage-padding: 2rem;
+  --chrome-height: 5.5rem;
   --toolbar-clearance: 8rem;
   --status-width: 13rem;
   --slider-width: 10rem;

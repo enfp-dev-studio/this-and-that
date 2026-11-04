@@ -51,6 +51,7 @@ export type Snapshot = {
   penOnly: boolean; // once a stylus is used, fingers don't draw
   penMode: PenMode;
   canUnsnap: boolean; // the last stroke was snapped: Undo (or a tap on it) restores the freehand one
+  zoom: number; // the picture's zoom over its fit-to-screen size
   versions: Version[];
   index: number; // current version
   result: Version | null; // the edit waiting for Keep or Discard
@@ -125,6 +126,7 @@ class Editor {
     penOnly: false,
     penMode: 'auto',
     canUnsnap: false,
+    zoom: 1,
     versions: [],
     index: -1,
     result: null,
@@ -154,6 +156,10 @@ class Editor {
   // QuickShape: a stroke held still for HOLD_MS at its end snaps to a shape.
   private hold: { x: number; y: number; timer: number } | null = null;
   private lastSnap: { stroke: Stroke; liftAt: number } | null = null;
+  // Zoom and pan of the picture over its fit-to-screen place (1, 0, 0 = fit).
+  private view = { zoom: 1, x: 0, y: 0 };
+  private pan: { x: number; y: number } | null = null; // right or middle mouse drag
+  private touches = new Map<number, { x: number; y: number }>(); // fingers, once a pen is in use
 
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -197,11 +203,19 @@ class Editor {
     const unwatch = watchTheme(() => this.draw());
     const listeners = new AbortController();
     const on = <K extends keyof HTMLElementEventMap>(type: K, f: (e: HTMLElementEventMap[K]) => void) => canvas.addEventListener(type, f, { signal: listeners.signal });
-    on('pointerdown', (e) => this.pointerDown(surface, e));
-    on('pointermove', (e) => (this.drawing ? this.pointerMove(e) : this.hoverAt(surface, e)));
+    on('pointerdown', (e) => (surface.key === 'target' && this.gestureDown(e)) || this.pointerDown(surface, e));
+    on('pointermove', (e) => (surface.key === 'target' && this.gestureMove(e)) || (this.drawing ? this.pointerMove(e) : this.hoverAt(surface, e)));
     on('pointerleave', () => this.setHover(null));
-    on('pointerup', () => this.endStroke());
-    on('pointercancel', () => this.endStroke());
+    on('pointerup', (e) => (surface.key === 'target' && this.gestureUp(e)) || this.endStroke());
+    on('pointercancel', (e) => (surface.key === 'target' && this.gestureUp(e)) || this.endStroke());
+    on('contextmenu', (e) => e.preventDefault());
+    // Wheel or trackpad pinch zooms the picture around the pointer (on the
+    // stage, so it works over the result and the callouts too).
+    if (surface.key === 'target') el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const box = canvas.getBoundingClientRect();
+      this.zoomAt(e.clientX - box.left, e.clientY - box.top, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
+    }, { signal: listeners.signal, passive: false });
     this.draw();
     return () => {
       ro.disconnect();
@@ -219,11 +233,97 @@ class Editor {
     const img = surface.image;
     if (!img) return { x: 0, y: 0, w, h, k: 1 };
     const pad = themeLength('--stage-padding');
+    // The picture clears the floating chrome above and the toolbar below.
+    const above = surface.key === 'target' ? Math.max(pad, themeLength('--chrome-height')) : pad;
     const below = surface.key === 'target' ? themeLength('--toolbar-clearance') : pad;
-    const aw = Math.max(1, w - pad * 2), ah = Math.max(1, h - pad - below);
-    const k = Math.min(aw / img.naturalWidth, ah / img.naturalHeight);
+    const aw = Math.max(1, w - pad * 2), ah = Math.max(1, h - above - below);
+    const fit = Math.min(aw / img.naturalWidth, ah / img.naturalHeight);
+    const zoom = surface.key === 'target' ? this.view : { zoom: 1, x: 0, y: 0 };
+    const k = fit * zoom.zoom;
     const iw = img.naturalWidth * k, ih = img.naturalHeight * k;
-    return { x: (w - iw) / 2, y: pad + (ah - ih) / 2, w: iw, h: ih, k };
+    // Zoomed around the fitted centre, then panned.
+    return { x: (w - iw) / 2 + zoom.x, y: above + ah / 2 - ih / 2 + zoom.y, w: iw, h: ih, k };
+  }
+
+  // ---------- zoom and pan (the picture only) ----------
+
+  // Zoom by `factor`, keeping the picture point under (px, py) in place (stage px).
+  zoomAt(px: number, py: number, factor: number) {
+    if (!this.target.image) return;
+    const r = this.fitRect(this.target);
+    const u = (px - r.x) / r.k, v = (py - r.y) / r.k;
+    this.view.zoom = Math.min(8, Math.max(0.5, this.view.zoom * factor));
+    const r2 = this.fitRect(this.target);
+    this.view.x += px - (r2.x + u * r2.k);
+    this.view.y += py - (r2.y + v * r2.k);
+    this.viewChanged();
+  }
+
+  private panBy(dx: number, dy: number) {
+    this.view.x += dx;
+    this.view.y += dy;
+    this.viewChanged();
+  }
+
+  // Back to fit-to-screen, eased.
+  fitView() {
+    const from = { ...this.view }, t0 = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / 280), e = 1 - (1 - t) ** 3;
+      this.view = { zoom: from.zoom + (1 - from.zoom) * e, x: from.x * (1 - e), y: from.y * (1 - e) };
+      this.viewChanged();
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  private viewChanged() {
+    if (this.snapshot.zoom !== this.view.zoom) this.set({ zoom: this.view.zoom });
+    this.draw();
+  }
+
+  // Right or middle mouse drags pan; with a pen in use, two fingers pinch and
+  // pan (fingers don't draw then). True when the event was a gesture.
+  private gestureDown(e: PointerEvent) {
+    if (e.pointerType === 'mouse' && (e.button === 1 || e.button === 2)) {
+      this.pan = { x: e.clientX, y: e.clientY };
+      return true;
+    }
+    if (e.pointerType === 'touch' && this.snapshot.penOnly && !this.drawing) {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      return true;
+    }
+    return false;
+  }
+
+  private gestureMove(e: PointerEvent) {
+    if (this.pan) {
+      this.panBy(e.clientX - this.pan.x, e.clientY - this.pan.y);
+      this.pan = { x: e.clientX, y: e.clientY };
+      return true;
+    }
+    const prev = this.touches.get(e.pointerId);
+    if (!prev) return false;
+    if (this.touches.size === 2) {
+      const [a, b] = [...this.touches.values()];
+      const other = a === prev ? b : a;
+      const now = { x: e.clientX, y: e.clientY };
+      const box = this.target.canvas!.getBoundingClientRect();
+      const mid0 = { x: (prev.x + other.x) / 2, y: (prev.y + other.y) / 2 }, mid1 = { x: (now.x + other.x) / 2, y: (now.y + other.y) / 2 };
+      const d0 = Math.hypot(prev.x - other.x, prev.y - other.y), d1 = Math.hypot(now.x - other.x, now.y - other.y);
+      if (d0 > 0) this.zoomAt(mid0.x - box.left, mid0.y - box.top, d1 / d0);
+      this.panBy(mid1.x - mid0.x, mid1.y - mid0.y);
+    }
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    return true;
+  }
+
+  private gestureUp(e: PointerEvent) {
+    if (this.pan && e.pointerType === 'mouse') {
+      this.pan = null;
+      return true;
+    }
+    return this.touches.delete(e.pointerId);
   }
 
   private strokesOn(surface: Surface) {
@@ -623,10 +723,12 @@ class Editor {
     this.forgetSnap();
   }
 
-  // A new picture starts a new history.
+  // A new picture starts a new history (and fits the screen).
   async open(url: string) {
     if (this.snapshot.mode === 'processing' || this.snapshot.mode === 'recording') return;
     await this.show(url);
+    this.view = { zoom: 1, x: 0, y: 0 };
+    this.set({ zoom: 1 });
     const v: Version = { url, imageId: upload(url) };
     v.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
     this.set({ mode: 'idle', versions: [v], index: 0, result: null, compare: false, marks: 0, ...this.emptyPanel() });

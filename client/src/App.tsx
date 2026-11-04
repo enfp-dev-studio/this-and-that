@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { editor } from '@/editor/engine';
-import { TopBar, type AppMode } from '@/components/top-bar';
+import { ImageChrome, type AppMode } from '@/components/top-bar';
 
 // three.js loads only when 3D mode opens, so the image mode starts as light as before.
 const ThreeMode = lazy(() => import('@/components/three-mode').then((m) => ({ default: m.ThreeMode })));
@@ -35,20 +35,21 @@ export function App() {
   }, [mode]);
 
   return (
-    <div className="flex h-dvh flex-col">
-      <TopBar mode={mode} onMode={switchMode} />
-      <div className="flex min-h-0 flex-1">
-        {mode === '3d' ? (
-          <Suspense>
-            <ThreeMode />
-          </Suspense>
-        ) : (
-          <>
+    // Full-bleed canvas; each mode floats its chrome over it.
+    <div className="relative h-dvh overflow-hidden">
+      {mode === '3d' ? (
+        <Suspense>
+          <ThreeMode onMode={switchMode} />
+        </Suspense>
+      ) : (
+        <>
+          <div className="absolute inset-0 flex">
             {s.activeRef && <RefPanel key={s.activeRef} />}
             <Stage />
-          </>
-        )}
-      </div>
+          </div>
+          <ImageChrome onMode={switchMode} />
+        </>
+      )}
     </div>
   );
 }

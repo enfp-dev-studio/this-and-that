@@ -13,7 +13,7 @@ export function RefThumbs() {
   const s = useEditor();
   if (!s.refs.length) return null;
   return (
-    <div className="absolute top-4 left-4 flex flex-col gap-2">
+    <div className="absolute top-(--chrome-height) left-4 flex flex-col gap-2">
       {s.refs.map((r, i) => (
         <Tooltip key={r.id}>
           <TooltipTrigger asChild>

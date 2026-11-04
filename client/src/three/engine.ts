@@ -70,6 +70,7 @@ class Engine3D {
       this.sketch.onSnap = (kind) => this.status(`QuickShape: snapped to ${SHAPES[kind]} · Undo brings back the stroke as drawn`);
       // After a build the model turns slowly until the user touches the scene.
       stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
+      this.highlightOnHover(stage);
       Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), quickShapeDemo: () => this.quickShapeDemo() });
     }
     return () => {};
@@ -77,6 +78,35 @@ class Engine3D {
 
   goTo(view: ViewName) {
     this.stage?.goTo(view);
+  }
+
+  fit() {
+    this.stage?.fit();
+  }
+
+  // Selection highlight: the part under the pen or mouse (not while drawing)
+  // glows softly.
+  private highlightOnHover(stage: Stage) {
+    const el = stage.renderer.domElement;
+    const ray = new THREE.Raycaster();
+    const glow = new THREE.Color('#2f6fde').multiplyScalar(0.3);
+    let lit: THREE.Mesh | null = null;
+    const light = (mesh: THREE.Mesh | null) => {
+      if (mesh === lit) return;
+      const emissive = (m: THREE.Mesh | null) => (m?.material as THREE.MeshStandardMaterial | undefined)?.emissive;
+      emissive(lit)?.setHex(0);
+      lit = mesh;
+      emissive(lit)?.copy(glow);
+    };
+    el.addEventListener('pointermove', (e) => {
+      if (e.buttons || e.pointerType === 'touch' || !stage.model.children.length) return light(null);
+      const r = el.getBoundingClientRect();
+      ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), stage.camera);
+      const hit = ray.intersectObjects(stage.model.children, true).find((h) => (h.object as THREE.Mesh).isMesh && h.object.userData.part);
+      light((hit?.object as THREE.Mesh | undefined) ?? null);
+    });
+    el.addEventListener('pointerleave', () => light(null));
+    el.addEventListener('pointerdown', () => light(null));
   }
 
   setPlane(plane: 'view' | 'ground') {

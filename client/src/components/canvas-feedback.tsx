@@ -26,7 +26,7 @@ export function StatusChip() {
   } else if (s.mode === 'review') text = s.peek ? 'Before' : 'Hold the picture to see before · Keep or discard';
   if (!text) return null;
   return (
-    <Badge variant="secondary" className="absolute top-4 left-1/2 -translate-x-1/2 shadow-lg">
+    <Badge variant="secondary" className="absolute top-(--chrome-height) left-1/2 -translate-x-1/2 shadow-lg">
       {s.mode === 'processing' ? <Loader2 className="animate-spin" /> : s.mode === 'recording' ? <Mic /> : null}
       {text}
     </Badge>
@@ -41,7 +41,7 @@ export function FailNotice() {
   if (!s.failure || s.mode !== 'idle') return null;
   if (s.failure === 'no speech') {
     return (
-      <Badge variant="secondary" role="alert" className="absolute top-4 left-1/2 -translate-x-1/2 shadow-lg">
+      <Badge variant="secondary" role="alert" className="absolute top-(--chrome-height) left-1/2 -translate-x-1/2 shadow-lg">
         <MicOff />
         Didn’t hear anything · talk while you draw
       </Badge>
@@ -54,7 +54,7 @@ export function FailNotice() {
     </span>
   );
   return (
-    <div role="alert" className="absolute top-4 left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+    <div role="alert" className="absolute top-(--chrome-height) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
       {LAB ? (
         <Tooltip>
           <TooltipTrigger asChild>{text}</TooltipTrigger>

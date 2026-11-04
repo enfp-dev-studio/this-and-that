@@ -4,6 +4,31 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
+// A floor grid that fades out with distance (quarter-unit and unit lines).
+function infiniteGrid() {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200),
+    new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: { uColor: { value: new THREE.Color('#b9b0a0') } },
+      vertexShader: `varying vec3 vPos; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vPos = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: `uniform vec3 uColor; varying vec3 vPos;
+        float line(float size) { vec2 c = vPos.xz / size; vec2 g = abs(fract(c - 0.5) - 0.5) / fwidth(c); return 1.0 - min(min(g.x, g.y), 1.0); }
+        void main() {
+          float fade = 1.0 - smoothstep(2.5, 9.0, distance(cameraPosition.xz, vPos.xz));
+          float a = max(line(0.25) * 0.28, line(1.0) * 0.55) * fade;
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(uColor, a);
+        }`,
+    }),
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.name = 'floor';
+  mesh.renderOrder = -2;
+  return mesh;
+}
+
 // A colour from theme.css (any CSS colour) for three.js.
 function themeColor(name: string, fallback: string) {
   const g = document.createElement('canvas').getContext('2d')!;
@@ -36,8 +61,11 @@ export class Stage {
     this.camera.position.set(0, 0.75, 3.4);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 0.55, 0);
+    // Calm, eased orbit / pan / zoom; the wheel zooms toward the pointer.
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.12;
+    this.controls.dampingFactor = 0.08;
+    this.controls.zoomToCursor = true;
+    this.controls.zoomSpeed = 0.8;
     this.controls.mouseButtons = { LEFT: null as any, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
     this.controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
     this.controls.minDistance = 0.4;
@@ -48,7 +76,11 @@ export class Stage {
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.9;
     grid.name = 'grid';
+    // The small grid is what Spark's renders show as the ground (views.ts turns
+    // it on there); the live view shows a subtle infinite floor instead.
+    grid.visible = false;
     this.scene.add(grid);
+    this.helpers.add(infiniteGrid());
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), new THREE.ShadowMaterial({ opacity: 0.14 }));
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.0005;
@@ -94,6 +126,17 @@ export class Stage {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+  }
+
+  // Frame the sketch and the model (eased), keeping the viewing direction.
+  fit() {
+    const box = new THREE.Box3().expandByObject(this.sketch).expandByObject(this.model);
+    if (box.isEmpty()) box.setFromCenterAndSize(new THREE.Vector3(0, 0.5, 0), new THREE.Vector3(1, 1, 1));
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(0.2, box.getSize(new THREE.Vector3()).length() / 2);
+    const dist = (radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov) / 2)) * 1.05;
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    this.tween = { from: this.camera.position.clone(), to: center.clone().addScaledVector(dir, dist), tFrom: this.controls.target.clone(), tTo: center, t0: performance.now(), ms: 500 };
   }
 
   // Fly to a named view around the current target.

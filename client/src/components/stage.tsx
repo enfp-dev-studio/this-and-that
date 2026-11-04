@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
-import { ImageIcon } from 'lucide-react';
+import { ImageIcon, Maximize } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { SAMPLES } from '@/editor/presets';
 import { useEditor } from '@/hooks/use-editor';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Toolbar } from '@/components/toolbar';
 import { Callouts, Caption, FailNotice, StatusChip } from '@/components/canvas-feedback';
 import { RefThumbs } from '@/components/ref-thumbs';
@@ -12,6 +13,24 @@ import { RefThumbs } from '@/components/ref-thumbs';
 // the canvas draws the picture, marks, SAM outlines and sheen; a finished
 // edit shows over it (hold it to see before); instructions sit beside their
 // marks; the caption runs under it while you talk.
+// Bottom right, like a design tool: the zoom, and back to fit-to-screen.
+// Wheel or pinch zooms; right or middle drag (or two fingers with a pen) pans.
+function ViewControls({ zoom }: { zoom: number }) {
+  return (
+    <div className="absolute right-4 bottom-(--toolbar-offset) flex items-center gap-2 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+      <span className="p-2 text-sm text-muted-foreground tabular-nums">{Math.round(zoom * 100)}%</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-touch" className="rounded-full" onClick={() => editor.fitView()} aria-label="Fit to screen">
+            <Maximize />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Fit to screen · wheel or pinch zooms, right-drag or two fingers pan</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
 export function Stage() {
   const s = useEditor();
   const stage = useRef<HTMLDivElement>(null);
@@ -70,6 +89,7 @@ export function Stage() {
           <Caption />
           <RefThumbs />
           <Toolbar hold={hold} />
+          <ViewControls zoom={s.zoom} />
         </>
       )}
     </div>

@@ -23,7 +23,8 @@ export function RefPanel() {
 
   return (
     <div className="flex w-(--ref-width) shrink-0 flex-col border-r bg-background">
-      <div className="flex items-center justify-between gap-2 border-b p-2">
+      <div className="h-(--chrome-height) shrink-0" />
+      <div className="flex items-center justify-between gap-2 border-y p-2">
         <Badge variant="secondary">Reference {refLetter(index)}</Badge>
         <div className="flex items-center gap-2">
           <Tooltip>

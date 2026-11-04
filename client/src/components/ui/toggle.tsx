@@ -12,8 +12,9 @@ const toggleVariants = cva(
         outline:
           "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground",
         // This & That: a segmented choice (mode, pen, drawing plane); the chosen one stands out.
+        // aria-checked too: inside a Tooltip trigger the item's data-state is the tooltip's.
         segment:
-          "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground",
+          "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground aria-checked:bg-primary aria-checked:text-primary-foreground",
       },
       size: {
         default: "h-9 min-w-9 px-2",

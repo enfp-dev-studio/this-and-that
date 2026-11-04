@@ -26,7 +26,6 @@ export function Toolbar({ hold }: { hold: Hold }) {
   return (
     <div className="absolute bottom-(--toolbar-offset) left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
       <div className="flex items-center gap-2">
-        <PenModes value={s.penMode} />
         <Tooltip>
           <TooltipTrigger asChild>
             <Toggle size="icon-touch" className="rounded-full" pressed={s.penOnly} onPressedChange={(on) => editor.setPenOnly(on)} aria-label="Pen only">
@@ -101,21 +100,21 @@ export function Toolbar({ hold }: { hold: Hold }) {
   );
 }
 
-// What a mark means. Neither pressed is auto: the app tells from what you say
-// ("이렇게", "like this") whether a mark picks a thing or draws its new shape.
-function PenModes({ value }: { value: PenMode }) {
+// What a mark means, in the top toolbar. Neither pressed is auto: the app
+// tells from what you say ("이렇게", "like this") whether a mark picks a thing
+// or draws its new shape.
+export function PenModes({ value }: { value: PenMode }) {
   const modes = [
     { value: 'point', label: 'Point', icon: Pointer, tip: 'Point: marks pick what to change' },
     { value: 'shape', label: 'Shape', icon: PenTool, tip: 'Shape: marks draw the new outline to follow' },
   ] as const;
   return (
-    <ToggleGroup type="single" variant="segment" size="touch" value={value === 'auto' ? '' : value} onValueChange={(v) => editor.setPenMode((v || 'auto') as PenMode)} aria-label="Pen mode (none pressed: auto)">
+    <ToggleGroup type="single" variant="segment" size="icon-touch" value={value === 'auto' ? '' : value} onValueChange={(v) => editor.setPenMode((v || 'auto') as PenMode)} aria-label="Pen mode (none pressed: auto)">
       {modes.map((m) => (
         <Tooltip key={m.value}>
           <TooltipTrigger asChild>
             <ToggleGroupItem value={m.value} aria-label={m.label}>
               <m.icon />
-              {m.label}
             </ToggleGroupItem>
           </TooltipTrigger>
           <TooltipContent>{m.tip} · press again for auto</TooltipContent>
