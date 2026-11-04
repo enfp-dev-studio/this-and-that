@@ -60,6 +60,8 @@ and open `http://localhost:8787` in Chrome on the tablet. Because it is `localho
 3. Release (or tap again) to send. Watch the progress, the caption and the list of understood edits.
 4. Drag the before/after slider. **Keep** makes the result the new image to keep refining, **Discard** throws it away, **Undo** goes back a version.
 
+QuickShape: end a stroke and hold the pen still for about 0.4 s, and it snaps to the shape it was meant to be when the fit is close: a nearly straight stroke to a line, a loop to an ellipse or circle, a line ending in a hook or V to a straight arrow; anything else stays freehand. The snapped shape is what Spark and SAM get. A quick tap on it (within 2.5 s) or Undo brings the freehand stroke back.
+
 With a stylus, finger touches on the image are ignored (palm rejection, the pen toggle in the toolbar), so one hand can hold the talk button while the other draws. Undo/Redo and the History list move between kept versions; Before / After compares a pending result, or the current version with the previous one. The sun/moon button switches light and dark.
 
 ## Repo layout

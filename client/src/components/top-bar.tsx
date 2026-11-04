@@ -36,7 +36,8 @@ export function TopBar() {
       </span>
 
       <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
-        <IconButton label="Undo" onClick={editor.undo} disabled={busy || s.index <= 0}>
+        {/* Right after a stroke snapped to a shape, Undo puts the freehand stroke back. */}
+        <IconButton label="Undo" onClick={editor.undo} disabled={!s.canUnsnap && (busy || s.index <= 0)}>
           <Undo2 />
         </IconButton>
         <IconButton label="Redo" onClick={editor.redo} disabled={busy || s.index >= s.versions.length - 1}>

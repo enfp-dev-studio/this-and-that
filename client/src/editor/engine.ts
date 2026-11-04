@@ -10,6 +10,7 @@ import { markColor, themeVar, themeLength, watchTheme } from './colors';
 import { loadTrials, saveTrials, type Method, type Round, type Trial } from './experiment';
 import type { Task } from './presets';
 import { LAB } from '../lab';
+import { quickShape } from './quickshape';
 
 export type Point = { x: number; y: number; t: number };
 export type Stroke = {
@@ -22,6 +23,8 @@ export type Stroke = {
   samDone?: boolean;
   settled?: boolean; // no tint or sheen: an arrow, "no change", or already edited locally
   pen?: 'point' | 'shape'; // the pen mode it was drawn with, when not auto
+  original?: Point[]; // the freehand stroke, when it was snapped to a shape (QuickShape)
+  snapAt?: number; // when it snapped, for the brief flash
 };
 // Auto: the app tells from what is said whether a mark selects or draws a new
 // shape. Point and Shape force it.
@@ -47,6 +50,7 @@ export type Snapshot = {
   marks: number; // marks drawn in this recording
   penOnly: boolean; // once a stylus is used, fingers don't draw
   penMode: PenMode;
+  canUnsnap: boolean; // the last stroke was snapped: Undo (or a tap on it) restores the freehand one
   versions: Version[];
   index: number; // current version
   result: Version | null; // the edit waiting for Keep or Discard
@@ -120,6 +124,7 @@ class Editor {
     marks: 0,
     penOnly: false,
     penMode: 'auto',
+    canUnsnap: false,
     versions: [],
     index: -1,
     result: null,
@@ -146,6 +151,9 @@ class Editor {
   private drawing: { stroke: Stroke; surface: Surface } | null = null;
   private parts: { url: string; list: Part[] } | null = null; // for the current version
   private hover: Part | null = null; // the part under the pen or mouse
+  // QuickShape: a stroke held still for HOLD_MS at its end snaps to a shape.
+  private hold: { x: number; y: number; timer: number } | null = null;
+  private lastSnap: { stroke: Stroke; liftAt: number } | null = null;
 
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -330,7 +338,10 @@ class Editor {
     ctx.globalAlpha = alpha;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    for (const [stroke, width] of [[halo, unit * 1.6], [color, unit]] as const) {
+    // Just snapped (QuickShape): a wider halo that fades out.
+    const flash = s.snapAt ? 1 - (performance.now() - s.snapAt) / 400 : 0;
+    const passes = flash > 0 ? ([[halo, unit * (1.6 + 2 * flash)], [halo, unit * 1.6], [color, unit]] as const) : ([[halo, unit * 1.6], [color, unit]] as const);
+    for (const [stroke, width] of passes) {
       ctx.beginPath();
       s.points.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       if (s.points.length === 1) ctx.lineTo(s.points[0].x + 0.1, s.points[0].y);
@@ -447,20 +458,87 @@ class Editor {
     this.drawing = { stroke, surface };
     this.strokes.push(stroke);
     this.set({ marks: this.strokes.length });
+    this.watchHold(e);
     this.draw();
   }
 
   private pointerMove(e: PointerEvent) {
     if (!this.drawing) return;
+    if (this.drawing.stroke.original) return; // snapped: the shape stays until the pen lifts
     const coalesced = e.getCoalescedEvents?.() ?? [];
     for (const ev of coalesced.length ? coalesced : [e]) this.drawing.stroke.points.push(this.toImage(this.drawing.surface, ev));
+    this.watchHold(e);
     this.draw();
   }
 
   private endStroke() {
-    if (this.drawing) this.segment(this.drawing.stroke);
+    if (this.hold) clearTimeout(this.hold.timer);
+    this.hold = null;
+    const d = this.drawing;
     this.drawing = null;
+    if (!d) return;
+    const s = d.stroke;
+    // A quick tap on a shape that just snapped puts the freehand stroke back.
+    const k = this.fitRect(d.surface).k;
+    const xs = s.points.map((p) => p.x), ys = s.points.map((p) => p.y);
+    const tap = s.points.at(-1)!.t - s.points[0].t < 300 && Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * k < 8;
+    const snapped = this.lastSnap;
+    if (tap && snapped && performance.now() - snapped.liftAt < 2500 && this.strokes.at(-2) === snapped.stroke && this.near(snapped.stroke, s.points[0], 40 / k)) {
+      this.strokes.pop();
+      this.set({ marks: this.strokes.length });
+      this.unsnap();
+      return;
+    }
+    if (s.original) this.lastSnap = { stroke: s, liftAt: performance.now() };
+    else this.forgetSnap();
+    this.segment(s);
   }
+
+  // ---------- QuickShape: hold the pen still at the end of a stroke ----------
+
+  private watchHold(e: PointerEvent) {
+    if (this.hold && Math.hypot(e.clientX - this.hold.x, e.clientY - this.hold.y) <= 4) return;
+    if (this.hold) clearTimeout(this.hold.timer);
+    this.hold = { x: e.clientX, y: e.clientY, timer: window.setTimeout(() => this.snap(), 400) };
+  }
+
+  private snap() {
+    const d = this.drawing;
+    if (!d || d.stroke.original) return;
+    const fit = quickShape(d.stroke.points, 24 / this.fitRect(d.surface).k);
+    if (!fit) return;
+    Object.assign(d.stroke, { original: d.stroke.points, points: fit.points, snapAt: performance.now() });
+    this.set({ canUnsnap: true });
+    this.flash();
+  }
+
+  // The freehand stroke back, and SAM asked again for it.
+  private unsnap() {
+    const s = this.lastSnap?.stroke;
+    this.forgetSnap();
+    if (!s?.original || !this.strokes.includes(s)) return false;
+    Object.assign(s, { points: s.original, original: undefined, snapAt: undefined, mask: undefined, tinted: undefined, samDone: false });
+    this.updateSamStep();
+    this.draw();
+    this.segment(s);
+    return true;
+  }
+
+  private forgetSnap() {
+    this.lastSnap = null;
+    if (this.snapshot.canUnsnap) this.set({ canUnsnap: false });
+  }
+
+  private near(s: Stroke, p: Point, pad: number) {
+    const xs = s.points.map((q) => q.x), ys = s.points.map((q) => q.y);
+    return p.x >= Math.min(...xs) - pad && p.x <= Math.max(...xs) + pad && p.y >= Math.min(...ys) - pad && p.y <= Math.max(...ys) + pad;
+  }
+
+  // Redraw for the snap's brief flash.
+  private flash = () => {
+    this.draw();
+    if (this.strokes.some((s) => s.snapAt && performance.now() - s.snapAt < 400)) requestAnimationFrame(this.flash);
+  };
 
   // Ask SAM for this mark right away; show its outline when it comes back.
   // Marks on a reference are crops for Muse Image, not edit regions.
@@ -469,14 +547,16 @@ class Editor {
       s.samDone = true;
       return;
     }
-    s.markId = crypto.randomUUID().slice(0, 8);
+    const markId = (s.markId = crypto.randomUUID().slice(0, 8));
     try {
       const imageId = await this.current()!.imageId;
-      const r = await postJson('/api/marks', { imageId, markId: s.markId, stroke: { mark: s.mark, points: s.points } });
+      const r = await postJson('/api/marks', { imageId, markId, stroke: { mark: s.mark, points: s.points } });
+      if (s.markId !== markId) return; // the stroke changed shape meanwhile (unsnapped) and was sent again
       if (r.found) s.mask = await loadImage(r.overlay);
     } catch (err) {
       console.warn('SAM for mark', s.mark, 'failed:', err);
     }
+    if (s.markId !== markId) return;
     s.samDone = true;
     if (this.strokes.includes(s)) {
       this.draw();
@@ -496,6 +576,7 @@ class Editor {
     if (this.snapshot.mode === 'processing') return;
     if (this.snapshot.mode === 'recording') this.cancelRecording();
     this.strokes = [];
+    this.forgetSnap();
     this.set({ marks: 0, failure: null });
     this.draw();
   }
@@ -539,6 +620,7 @@ class Editor {
     this.target.image = await loadImage(url);
     this.preview = null;
     this.strokes = [];
+    this.forgetSnap();
   }
 
   // A new picture starts a new history.
@@ -564,7 +646,8 @@ class Editor {
     this.loadParts(versions[index]);
     this.draw();
   }
-  undo = () => this.goTo(this.snapshot.index - 1);
+  // Undo right after a stroke snapped puts the freehand stroke back first.
+  undo = () => this.unsnap() || this.goTo(this.snapshot.index - 1);
   redo = () => this.goTo(this.snapshot.index + 1);
 
   // Keep: the result becomes the next version (dropping any redo).
@@ -580,6 +663,7 @@ class Editor {
 
   discard() {
     this.strokes = [];
+    this.forgetSnap();
     this.preview = null;
     this.set({ mode: 'idle', result: null, compare: false, marks: 0, ...this.emptyPanel() });
     this.draw();
@@ -640,6 +724,7 @@ class Editor {
     if (this.snapshot.mode === 'recording') return;
     this.markInput();
     this.strokes = [];
+    this.forgetSnap();
     this.chunks = [];
     this.set({ mode: 'recording', marks: 0, compare: false, ...this.emptyPanel() });
     this.t0 = performance.now();
@@ -675,6 +760,7 @@ class Editor {
   }
 
   private async stopAndSend() {
+    this.forgetSnap(); // what is sent is final
     const rec = this.recorder;
     const audio = rec
       ? await new Promise<Blob>((resolve) => {
