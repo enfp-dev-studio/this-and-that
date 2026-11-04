@@ -12,6 +12,7 @@ import { Voice } from './voice';
 import { applyPaint, renderModel } from './paint';
 import { penStroke, screenOf } from './replay';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { watchTheme } from '../editor/colors';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
@@ -40,6 +41,10 @@ const SHAPES = { line: 'a line', circle: 'a circle', ellipse: 'an ellipse', arc:
 class Engine3D {
   private snapshot: Snapshot3D = { status: IDLE, working: false, recording: false, caption: '', views: [], thinking: false, result: null, plane: 'view', pen: 'auto', sketchVisible: true, gridVisible: true, wireframe: false, hasModel: false, hasStrokes: false, canUndo: false, canRedo: false };
   private listeners = new Set<() => void>();
+  // Failures and notices, shown the same way as in the image mode (toasts).
+  onError: (message: string) => void = () => {};
+  onNotice: (message: string) => void = () => {};
+  private imported: THREE.Object3D | null = null; // a .glb opened as a reference to sketch over
   private stage: Stage | null = null;
   private sketch!: Sketch;
   private builder!: Builder;
@@ -146,6 +151,22 @@ class Engine3D {
     this.set({ wireframe });
   }
 
+  // Open a .glb/.gltf as a reference to sketch over and around (strokes can
+  // land on its surface); it is not part of what Spark builds.
+  async importModel(file: File) {
+    if (!this.stage) return;
+    try {
+      const gltf = await new GLTFLoader().parseAsync(await file.arrayBuffer(), '');
+      if (this.imported) this.stage.model.remove(this.imported);
+      this.imported = gltf.scene;
+      this.stage.model.add(gltf.scene);
+      this.stage.fit();
+      this.sync();
+    } catch (e) {
+      this.onError(`That file didn’t open: ${String(e).slice(0, 120)}`);
+    }
+  }
+
   // The model as a binary glTF (.glb) download.
   async exportGlb() {
     if (!this.stage || !this.builder.parts.length) return;
@@ -167,6 +188,8 @@ class Engine3D {
   clear() {
     this.sketch.clear();
     this.builder.clear();
+    if (this.imported) this.stage!.model.remove(this.imported);
+    this.imported = null;
     this.builds.length = 0;
     this.redos = [];
     this.sketch.round = 1;
@@ -200,7 +223,8 @@ class Engine3D {
       await this.voice.start();
     } catch (e) {
       this.set({ recording: false });
-      this.status(`Microphone unavailable: ${e}`);
+      this.status(IDLE);
+      this.onNotice(`Microphone unavailable (${e}). Type instead with the keyboard button.`);
     }
   }
 
@@ -285,7 +309,8 @@ class Engine3D {
       this.set({ views: [{ name: 'MUSE IMAGE', image: r.image }, ...this.snapshot.views] });
       this.status(`Muse Image ${(r.ms / 1000).toFixed(1)} s · best seen from the painted side`);
     } catch (e) {
-      this.status(`Painting didn’t come through: ${String(e).slice(0, 160)}`);
+      this.status(IDLE);
+      this.onError(`Painting didn’t come through: ${String(e).slice(0, 160)}`);
     } finally {
       this.busy = false;
     }
@@ -305,7 +330,7 @@ class Engine3D {
     const stage = this.stage, sketch = this.sketch, builder = this.builder;
     const editing = builder.parts.length > 0;
     const strokes = editing ? sketch.current() : sketch.strokes;
-    if (!strokes.length && !(editing && transcript)) return this.status('Draw something first');
+    if (!strokes.length && !(editing && transcript)) return this.onNotice('Draw something first, then talk or type.');
     this.busy = true;
     const before = builder.parts;
     this.status('Looking at the sketch from six sides', true);
@@ -362,7 +387,8 @@ class Engine3D {
         }
       }
     } catch (e) {
-      this.status(`That build didn’t come through: ${String(e).slice(0, 160)}`);
+      this.status(IDLE);
+      this.onError(`That build didn’t come through: ${String(e).slice(0, 160)}`);
     } finally {
       this.busy = false;
       stage.offTick(pulse);
