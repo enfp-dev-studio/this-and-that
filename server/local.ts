@@ -24,7 +24,8 @@ const luma = (r: number, g: number, b: number) => 0.299 * r + 0.587 * g + 0.114 
 
 // SAM masks can stop just short of an object's edge (a sliver of door
 // frame). Take in pixels in a thin ring around the mask whose colour is close
-// to the object's average.
+// to the object's average, unless much of the ring is that colour (an orange
+// cat on a wooden desk): then it is the surroundings, and nothing is added.
 function growBySimilarColor(img: Rgb, alpha: Buffer) {
   const { width: w, height: h } = img;
   const mean = [0, 0, 0];
@@ -32,7 +33,7 @@ function growBySimilarColor(img: Rgb, alpha: Buffer) {
   for (let i = 0; i < alpha.length; i++) if (alpha[i] >= 128) { for (let c = 0; c < 3; c++) mean[c] += img.data[i * 3 + c]; n++; }
   if (!n) return;
   for (let c = 0; c < 3; c++) mean[c] /= n;
-  const r = Math.round(Math.max(w, h) * 0.01);
+  const r = Math.round(Math.max(w, h) * 0.006);
   const inMask = Uint8Array.from(alpha, (a) => (a >= 128 ? 1 : 0));
   // Distance to the mask, by a separable max (square ring of radius r).
   const rowNear = new Uint8Array(w * h);
@@ -42,17 +43,35 @@ function growBySimilarColor(img: Rgb, alpha: Buffer) {
     last = Infinity;
     for (let x = w - 1; x >= 0; x--) { if (inMask[y * w + x]) last = x; if (last - x <= r) rowNear[y * w + x] = 1; }
   }
+  const ring = new Uint8Array(w * h);
   for (let x = 0; x < w; x++) {
     let last = -Infinity;
-    for (let y = 0; y < h; y++) { if (rowNear[y * w + x]) last = y; if (y - last <= r) grow(y * w + x); }
+    for (let y = 0; y < h; y++) { if (rowNear[y * w + x]) last = y; if (y - last <= r) ring[y * w + x] = 1; }
     last = Infinity;
-    for (let y = h - 1; y >= 0; y--) { if (rowNear[y * w + x]) last = y; if (last - y <= r) grow(y * w + x); }
+    for (let y = h - 1; y >= 0; y--) { if (rowNear[y * w + x]) last = y; if (last - y <= r) ring[y * w + x] = 1; }
   }
-  function grow(i: number) {
-    if (alpha[i] >= 128) return;
-    const d = Math.hypot(img.data[i * 3] - mean[0], img.data[i * 3 + 1] - mean[1], img.data[i * 3 + 2] - mean[2]);
-    if (d < 45) alpha[i] = 255;
+  const similar: number[] = [];
+  let ringSize = 0;
+  for (let i = 0; i < ring.length; i++) {
+    if (!ring[i] || inMask[i]) continue;
+    ringSize++;
+    if (Math.hypot(img.data[i * 3] - mean[0], img.data[i * 3 + 1] - mean[1], img.data[i * 3 + 2] - mean[2]) < 35) similar.push(i);
   }
+  if (similar.length > ringSize * 0.3) return;
+  for (const i of similar) alpha[i] = 255;
+}
+
+// A white, grey or black object has no colour to shade a new one with, and a
+// local recolor of it looks flat: leave those to Muse Image.
+function lowChroma(img: Rgb, alpha: Buffer) {
+  let sum = 0, n = 0;
+  for (let i = 0; i < alpha.length; i++) {
+    if (alpha[i] < 128) continue;
+    const o = i * 3;
+    sum += Math.max(img.data[o], img.data[o + 1], img.data[o + 2]) - Math.min(img.data[o], img.data[o + 1], img.data[o + 2]);
+    n++;
+  }
+  return !n || sum / n < 30;
 }
 
 // New colour, same shading: each pixel's brightness relative to the object's
@@ -171,20 +190,22 @@ function enlarge(img: Rgb, alpha: Buffer, s: number) {
   }
 }
 
-// Apply the edits that can run locally. Returns the new image (PNG) and the
-// marks it handled; everything else still needs Muse Image.
-export async function applyLocal(image: Buffer, edits: Edit[], masks: Map<number, Mask>) {
+// Apply the edits that can run locally, except the marks in `skip`. Returns
+// the new image (PNG) and the marks it handled; the rest need Muse Image.
+export async function applyLocal(image: Buffer, edits: Edit[], masks: Map<number, Mask>, skip = new Set<number>()) {
   const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const img: Rgb = { data, width: info.width, height: info.height };
   const done = new Set<number>();
   for (const e of edits) {
-    if (e.kind === 'pointer' || !e.op || !LOCAL_OPS.has(e.op)) continue;
+    if (e.kind === 'pointer' || !e.op || !LOCAL_OPS.has(e.op) || skip.has(e.mark)) continue;
     const mask = masks.get(e.mark);
     if (!mask) continue;
     const alpha = await alphaOf(mask, img.width, img.height);
-    if (e.op === 'recolor') growBySimilarColor(img, alpha);
-    if (e.op === 'recolor' && /^#[0-9a-f]{6}$/i.test(e.color ?? '')) recolor(img, alpha, e.color!);
-    else if (e.op === 'tone' && e.amount && e.amount > 0) tone(img, alpha, e.amount);
+    if (e.op === 'recolor') {
+      if (!/^#[0-9a-f]{6}$/i.test(e.color ?? '') || lowChroma(img, alpha)) continue;
+      growBySimilarColor(img, alpha);
+      recolor(img, alpha, e.color!);
+    } else if (e.op === 'tone' && e.amount && e.amount > 0) tone(img, alpha, e.amount);
     else if (e.op === 'scale' && e.amount && e.amount >= 1) enlarge(img, alpha, e.amount);
     else continue;
     done.add(e.mark);

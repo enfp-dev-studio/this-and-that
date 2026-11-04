@@ -211,11 +211,13 @@ async function changedNear(image: Buffer, edited: Buffer, areas: number[][], w: 
   return { width: w, height: h, data: out };
 }
 
-// Paste only the marked regions of `edited` onto `image`: each mark's SAM
-// mask, plus whatever the edit visibly changed close to the mark.
-export async function pasteMarked(image: Buffer, edited: Buffer, strokes: Stroke[], seg: { masks: Map<number, Mask>; width: number; height: number }, edits: Edit[]) {
-  const { width, height } = await sharp(image).metadata();
-  const scale = seg.width / width!;
+type Seg = { masks: Map<number, Mask>; width: number; height: number };
+
+// Where generative edits may change the picture, at SAM's size: each mark's
+// SAM mask (or the stroke, for an arrow), and the area around it that the
+// paste also takes changes from (the mark's box grown by half; a quarter of
+// the image around an arrow).
+export function editAreas(strokes: Stroke[], edits: Edit[], seg: Seg, scale: number) {
   const side = Math.max(seg.width, seg.height);
   const regions: Mask[] = [];
   const near: number[][] = [];
@@ -234,6 +236,26 @@ export async function pasteMarked(image: Buffer, edited: Buffer, strokes: Stroke
       near.push([x0 - gx, y0 - gy, x1 + gx, y1 + gy]);
     }
   }
+  return { regions, near };
+}
+
+// Does a mask touch any of those areas?
+export function touchesAreas(mask: Mask, areas: { regions: Mask[]; near: number[][] }) {
+  const { width: w, data } = mask;
+  for (let i = 0; i < data.length; i++) {
+    if (!data[i]) continue;
+    const x = i % w, y = (i / w) | 0;
+    if (areas.near.some(([x0, y0, x1, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) return true;
+    if (areas.regions.some((r) => r.data[i])) return true;
+  }
+  return false;
+}
+
+// Paste only the marked regions of `edited` onto `image`: each mark's SAM
+// mask, plus whatever the edit visibly changed close to the mark.
+export async function pasteMarked(image: Buffer, edited: Buffer, strokes: Stroke[], seg: Seg, edits: Edit[]) {
+  const { width, height } = await sharp(image).metadata();
+  const { regions, near } = editAreas(strokes, edits, seg, seg.width / width!);
   if (!regions.length) return { out: await sharp(image).png().toBuffer(), alpha: Buffer.alloc(width! * height!) };
   regions.push(await changedNear(image, edited, near, seg.width, seg.height));
   const full = Math.max(width!, height!);

@@ -16,8 +16,8 @@ import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { transcribe, type Mask } from './meta.ts';
-import { guideImage, museEdit, museEditSpoken, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
-import { applyLocal } from './local.ts';
+import { editAreas, guideImage, museEdit, museEditSpoken, touchesAreas, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, colorOf, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
@@ -198,7 +198,22 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   let generative = edits.filter((e) => !/^no change/i.test(e.instruction));
   let local: Awaited<ReturnType<typeof applyLocal>> | null = null;
   if (opts.instant) {
-    local = await T('local edits', () => applyLocal(image, edits, masks));
+    // A local edit where a generative one may also change things (a recolored
+    // mug with a plant drawn in front of it) would fight the paste: Muse Image
+    // does both. Repeat, since a mark moved to Muse widens the generative area.
+    const isLocal = (e: Edit) => e.kind !== 'pointer' && !!e.op && LOCAL_OPS.has(e.op) && masks.has(e.mark);
+    const toMuse = new Set<number>();
+    for (let moved = true; moved; ) {
+      moved = false;
+      const areas = editAreas(strokes, generative.filter((e) => !isLocal(e) || toMuse.has(e.mark)), seg, seg.width / img.width);
+      for (const e of generative) {
+        if (isLocal(e) && !toMuse.has(e.mark) && touchesAreas(masks.get(e.mark)!, areas)) {
+          toMuse.add(e.mark);
+          moved = true;
+        }
+      }
+    }
+    local = await T('local edits', () => applyLocal(image, edits, masks, toMuse));
     if (local.done.size) {
       generative = generative.filter((e) => !local!.done.has(e.mark));
       job.localMarks = [...local.done];
@@ -224,7 +239,10 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     out = (await T('paste', () => pasteMarked(image, edited, strokes, seg, generative))).out;
     // Local edits go on top, so a generative region that overlaps them (an
     // arrow crossing a recolored mug) can't undo them.
-    if (local) out = (await T('local edits again', () => applyLocal(out, edits, masks))).out;
+    if (local) {
+      const notLocal = new Set(edits.map((e) => e.mark).filter((m) => !local!.done.has(m)));
+      out = (await T('local edits again', () => applyLocal(out, edits, masks, notLocal))).out;
+    }
   }
 
   const result = await T('store result', () => storeImage(out, `${job.id}r`));
