@@ -66,10 +66,18 @@ async function subtitle(text: string, file: string) {
 }
 
 // A quiet line of explanation at the top left (clear of the subtitles at the bottom).
+// Drawn on the final frame (after the camera's crop and zoom), 48 px in from
+// the edges; a long line gets a smaller font rather than running off the right.
+const MARGIN = 48;
 async function notePng(text: string, file: string) {
-  const size = 32, w = Math.round(text.length * size * 0.5) + 48;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="40" y="40" width="${w}" height="58" rx="10" fill="#000" fill-opacity="0.55"/><text x="64" y="80" font-family="${FONT}" font-size="${size}" font-weight="400" fill="#e4e4e7">${esc(text)}</text></svg>`;
+  const size = Math.min(32, Math.floor((W - 2 * MARGIN - 48) / (text.length * 0.52)));
+  const w = Math.round(text.length * size * 0.52) + 48;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${MARGIN}" y="${MARGIN}" width="${w}" height="${Math.round(size * 1.8)}" rx="10" fill="#000" fill-opacity="0.55"/><text x="${MARGIN + 24}" y="${MARGIN + Math.round(size * 1.25)}" font-family="${FONT}" font-size="${size}" font-weight="400" fill="#e4e4e7">${esc(text)}</text></svg>`;
   await sharp(Buffer.from(svg)).png().toFile(file);
+  // The text's real right edge (rendered), checked against the margin.
+  const { info } = await sharp(file).extractChannel(3).trim({ threshold: 1 }).toBuffer({ resolveWithObject: true });
+  const right = (info.trimOffsetLeft !== undefined ? -info.trimOffsetLeft : 0) + info.width;
+  if (right > W - MARGIN) throw new Error(`the caption "${text}" runs to x=${right}, past the ${MARGIN} px margin`);
 }
 
 // ---------- clips ----------
