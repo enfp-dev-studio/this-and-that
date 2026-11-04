@@ -14,6 +14,9 @@ import { penStroke, screenOf } from './replay';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { watchTheme } from '../editor/colors';
+import { paintModel, perceive } from '../runtime/perceive';
+import { countJob, limits, ProxyError } from '../runtime/meta';
+import { put } from '../runtime/store';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
 export type Snapshot3D = {
@@ -219,6 +222,9 @@ class Engine3D {
     if (this.voice.recording || this.busy) return;
     this.set({ recording: true, caption: '' });
     this.status('Listening · draw while you talk');
+    // A take is at most maxRecordingSeconds long.
+    clearTimeout(this.talkTimer);
+    this.talkTimer = window.setTimeout(() => this.voice.recording && ((this.toggled = false), this.stopTalk('')), limits().maxRecordingSeconds * 1000);
     try {
       await this.voice.start();
     } catch (e) {
@@ -228,7 +234,10 @@ class Engine3D {
     }
   }
 
+  private talkTimer: number | undefined;
+
   async stopTalk(typed: string) {
+    clearTimeout(this.talkTimer);
     if (!this.voice.recording) return;
     this.set({ recording: false });
     this.status('Transcribing', true);
@@ -300,11 +309,12 @@ class Engine3D {
     stage.controls.autoRotate = false;
     this.status('Muse Image is painting the model from this view', true);
     try {
+      await countJob('paint').catch((e) => {
+        if (e instanceof ProxyError) throw e;
+      });
       this.builder.finish();
       const { image, mask, cam } = renderModel(stage);
-      const res = await fetch('/api/3d/paint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, subject: this.subject, style }) });
-      const r = await res.json();
-      if (!res.ok) throw new Error(r.error);
+      const r = await paintModel(image, this.subject, style);
       await applyPaint(stage, r.image, cam, mask);
       this.set({ views: [{ name: 'MUSE IMAGE', image: r.image }, ...this.snapshot.views] });
       this.status(`Muse Image ${(r.ms / 1000).toFixed(1)} s · best seen from the painted side`);
@@ -332,6 +342,15 @@ class Engine3D {
     const strokes = editing ? sketch.current() : sketch.strokes;
     if (!strokes.length && !(editing && transcript)) return this.onNotice('Draw something first, then talk or type.');
     this.busy = true;
+    // Each build counts against the free daily jobs.
+    try {
+      await countJob('build');
+    } catch (e) {
+      if (e instanceof ProxyError) {
+        this.busy = false;
+        return this.status(e.message);
+      }
+    }
     const before = builder.parts;
     this.status('Looking at the sketch from six sides', true);
     builder.finish();
@@ -344,48 +363,31 @@ class Engine3D {
     };
     stage.onTick(pulse);
     try {
-      const res = await fetch('/api/3d/perceive', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ views, transcript, strokes: strokes.map((s) => this.strokeInfo(s)), parts: builder.parts }),
-      });
-      if (!res.ok || !res.body) throw new Error(await res.text());
-      // NDJSON: parts arrive one by one while Spark writes them.
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
+      // Parts arrive one by one while Spark writes them.
       const got: Part[] = [];
-      let buf = '', said = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const ev = JSON.parse(buf.slice(0, nl));
-          buf = buf.slice(nl + 1);
-          if (ev.type === 'say') said = ev.say;
-          if (ev.type === 'part') {
-            got.push(ev.part);
-            builder.apply(got, sketch.strokes, true);
-            this.status(`Building · ${got.length} ${got.length === 1 ? 'part' : 'parts'}`, true);
-          }
-          if (ev.type === 'error') throw new Error(ev.error);
-          if (ev.type === 'done') {
-            const a = ev.answer;
-            this.subject = a.subject;
-            this.builds.push({ parts: before, transcript });
-            builder.apply(a.parts, sketch.strokes);
-            if (this.snapshot.wireframe) this.set({ wireframe: false });
-            sketch.settle();
-            stage.controls.autoRotateSpeed = 1.6;
-            stage.controls.autoRotate = true;
-            this.set({ result: { say: a.say || said || a.subject, parts: a.parts.map((p: Part) => ({ name: p.name, color: p.color })), ms: ev.ms } });
-            this.redos = [];
-            this.status(`${a.subject} · ${a.parts.length} parts · ${(ev.ms / 1000).toFixed(1)} s`);
-            (window as any).last = ev;
-          }
+      let said = '';
+      const t0 = Date.now();
+      const r = await perceive({ views, transcript, strokes: strokes.map((s) => this.strokeInfo(s)), parts: builder.parts }, (ev) => {
+        if (ev.type === 'say') said = ev.say;
+        if (ev.type === 'part') {
+          got.push(ev.part as Part);
+          builder.apply(got, sketch.strokes, true);
+          this.status(`Building · ${got.length} ${got.length === 1 ? 'part' : 'parts'}`, true);
         }
-      }
+      });
+      const a = r.answer;
+      this.subject = a.subject;
+      this.builds.push({ parts: before, transcript });
+      builder.apply(a.parts as Part[], sketch.strokes);
+      if (this.snapshot.wireframe) this.set({ wireframe: false });
+      sketch.settle();
+      stage.controls.autoRotateSpeed = 1.6;
+      stage.controls.autoRotate = true;
+      this.set({ result: { say: a.say || said || a.subject, parts: a.parts.map((p) => ({ name: p.name, color: p.color })), ms: r.ms } });
+      this.redos = [];
+      this.status(`${a.subject} · ${a.parts.length} parts · ${(r.ms / 1000).toFixed(1)} s`);
+      (window as any).last = { type: 'done', ...r };
+      put('models', { id: crypto.randomUUID().slice(0, 8), at: t0, transcript, subject: a.subject, say: a.say, parts: a.parts, ms: r.ms, firstMs: r.firstMs, usage: r.usage });
     } catch (e) {
       this.status(IDLE);
       this.onError(`That build didn’t come through: ${String(e).slice(0, 160)}`);

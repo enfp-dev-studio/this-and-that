@@ -1,21 +1,30 @@
-// Streams the mic as 16 kHz PCM to the server for realtime transcription, so
-// the transcript is ready ~0.3 s after release and shows as live captions.
+// Captures the mic as 16 kHz PCM while talking and streams it for realtime
+// transcription (through the Worker), so the transcript is ready ~0.3 s after
+// release and shows as live captions. The same PCM is the voice track of the
+// video Spark watches, and what batch transcription falls back to.
 
-import { postJson } from './api';
+import { runtime } from '../runtime';
+import type { RealtimeAsr } from '../runtime/meta';
 
 export class LiveAsr {
-  id: Promise<string | null>;
+  private asr: Promise<RealtimeAsr | null>;
   private ctx = new AudioContext();
   private src: MediaStreamAudioSourceNode;
   private node: ScriptProcessorNode;
+  private all: Int16Array[] = [];
   private pending: Int16Array[] = [];
   private pendingLength = 0;
   private queue = Promise.resolve();
 
-  // `imageIds`: the picture and its references, whose part names the server
-  // tells Voice Transcribe to listen for.
-  constructor(stream: MediaStream, private onText: (text: string) => void, imageIds: Promise<string[]>) {
-    this.id = imageIds.then((ids) => postJson('/api/asr', { imageIds: ids })).then((r) => r.asrId as string, () => null);
+  // `imageIds`: the picture and its references, whose part names Voice
+  // Transcribe is told to listen for. `t0`: when the recording started.
+  constructor(stream: MediaStream, onText: (text: string) => void, imageIds: Promise<string[]>, t0 = performance.now()) {
+    this.asr = imageIds.then((ids) => {
+      const asr = runtime.startAsr(ids);
+      asr.startClock(t0);
+      asr.onText = onText;
+      return asr;
+    }, () => null);
     this.src = this.ctx.createMediaStreamSource(stream);
     this.node = this.ctx.createScriptProcessor(4096, 1, 1);
     this.node.onaudioprocess = (e) => this.push(e.inputBuffer.getChannelData(0));
@@ -32,6 +41,7 @@ export class LiveAsr {
       const v = input[i0] * (1 - f) + (input[Math.min(input.length - 1, i0 + 1)] ?? 0) * f;
       out[i] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
     }
+    this.all.push(out);
     this.pending.push(out);
     this.pendingLength += out.length;
     if (this.pendingLength >= 4000) this.flush();
@@ -39,31 +49,38 @@ export class LiveAsr {
 
   private flush() {
     if (!this.pendingLength) return;
-    const pcm = new Int16Array(this.pendingLength);
-    let off = 0;
-    for (const p of this.pending) {
-      pcm.set(p, off);
-      off += p.length;
-    }
+    const pcm = concat(this.pending);
     this.pending = [];
     this.pendingLength = 0;
-    // One request at a time keeps the chunks in order.
-    this.queue = this.queue.then(async () => {
-      const id = await this.id;
-      if (!id) return;
-      const r = await fetch(`/api/asr/${id}`, { method: 'POST', body: pcm.buffer });
-      if (r.ok) this.onText((await r.json()).text);
-    }).catch(() => {});
+    // One send at a time keeps the chunks in order.
+    this.queue = this.queue.then(async () => (await this.asr)?.send(pcm)).catch(() => {});
   }
 
-  // Stop streaming; resolves to the session id once every chunk is sent, or
-  // to null after 3 s (the server then transcribes the recording instead).
+  // Stop: the whole recording as PCM, and the realtime session once every
+  // chunk is sent, or null after 3 s (the recording is then transcribed in one batch).
   async stop() {
     this.node.disconnect();
     this.src.disconnect();
     this.flush();
     const sent = await Promise.race([this.queue.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 3000))]);
     this.ctx.close();
-    return sent ? this.id : null;
+    const asr = await this.asr;
+    if (!sent) asr?.close();
+    return { pcm: concat(this.all), asr: sent ? asr : null };
   }
+
+  // Throw the recording away.
+  cancel() {
+    this.node.disconnect();
+    this.src.disconnect();
+    this.ctx.close();
+    this.asr.then((a) => a?.close());
+  }
+}
+
+export function concat(parts: Int16Array[]) {
+  const out = new Int16Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) out.set(p, off), (off += p.length);
+  return out;
 }

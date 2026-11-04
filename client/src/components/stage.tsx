@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { ImageIcon, ZoomIn, ZoomOut } from 'lucide-react';
+import { History, ImageIcon, ZoomIn, ZoomOut } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { SAMPLES } from '@/editor/presets';
 import { useEditor } from '@/hooks/use-editor';
@@ -33,10 +33,17 @@ function ViewControls({ zoom }: { zoom: number }) {
 }
 
 // The same empty state in both modes: one line and a sample to try.
-export function EmptyState({ text, onSample }: { text: string; onSample: () => void }) {
+// `onResume`: a picture from an earlier visit is kept in this browser.
+export function EmptyState({ text, onSample, onResume }: { text: string; onSample: () => void; onResume?: () => void }) {
   return (
     <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 p-4">
       <p className="text-sm text-muted-foreground">{text}</p>
+      {onResume && (
+        <Button size="touch" variant="outline" className="pointer-events-auto" onClick={onResume}>
+          <History />
+          Continue where you left off
+        </Button>
+      )}
       <Button size="touch" className="pointer-events-auto" onClick={onSample}>
         <ImageIcon />
         Try a sample
@@ -88,7 +95,7 @@ export function Stage() {
       )}
 
       {s.mode === 'empty' ? (
-        <EmptyState text="Open a picture. Draw on it. Say what you want." onSample={() => editor.open(SAMPLES[0].url)} />
+        <EmptyState text="Open a picture. Draw on it. Say what you want." onSample={() => editor.open(SAMPLES[0].url)} onResume={s.resumable ? () => editor.resume() : undefined} />
       ) : (
         <>
           <Callouts />

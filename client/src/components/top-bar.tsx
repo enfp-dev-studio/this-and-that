@@ -4,6 +4,7 @@ import { useEditor } from '@/hooks/use-editor';
 import { LAB } from '@/lab';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PrivacyNote } from '@/components/privacy';
 import { Separator } from '@/components/ui/separator';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Toggle } from '@/components/ui/toggle';
@@ -35,9 +36,12 @@ export function Chrome({ left, center, right }: { left: React.ReactNode; center:
 
 export function Brand() {
   return (
-    <span className="p-2 text-sm font-semibold tracking-tight">
-      This <span className="text-muted-foreground">&amp;</span> That
-    </span>
+    <>
+      <span className="p-2 text-sm font-semibold tracking-tight">
+        This <span className="text-muted-foreground">&amp;</span> That
+      </span>
+      <PrivacyNote />
+    </>
   );
 }
 

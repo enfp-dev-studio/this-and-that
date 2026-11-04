@@ -1,6 +1,13 @@
-// Hold-to-talk: streams the mic as 16 kHz PCM to the server for realtime
-// Voice Transcribe (live caption), and keeps the PCM so that on release the
-// server can fall back to batch transcription of the same audio as a WAV.
+// Hold-to-talk: streams the mic as 16 kHz PCM for realtime Voice Transcribe
+// (live caption, through the Worker), and keeps the PCM so that on release
+// the same audio can be transcribed in one batch if the realtime final is late.
+
+import { RealtimeAsr, transcribe } from '../runtime/meta';
+import { toWav } from '../runtime/render';
+import { concat } from '../editor/live-asr';
+
+// Words Voice Transcribe should listen for.
+const KEYWORDS = ['의자', '등받이', '다리', '좌석', '집', '지붕', '창문', '문', '굴뚝', '테이블', '손잡이', '컵', '나무', '높게', '길게'];
 
 export class Voice {
   private stream: MediaStream | null = null;
@@ -11,7 +18,7 @@ export class Voice {
   private pending: Int16Array[] = [];
   private pendingLength = 0;
   private queue: Promise<unknown> = Promise.resolve();
-  private id: Promise<string | null> = Promise.resolve(null);
+  private asr: RealtimeAsr | null = null;
   recording = false;
 
   constructor(private onText: (text: string) => void) {}
@@ -22,7 +29,12 @@ export class Voice {
     this.all = [];
     this.pending = [];
     this.pendingLength = 0;
-    this.id = fetch('/api/3d/asr', { method: 'POST' }).then((r) => r.json()).then((j) => j.asrId as string, () => null);
+    try {
+      this.asr = new RealtimeAsr(KEYWORDS);
+      this.asr.onText = (text) => this.recording && this.onText(text);
+    } catch {
+      this.asr = null;
+    }
     this.stream ??= await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
     this.ctx ??= new AudioContext();
     await this.ctx.resume();
@@ -53,12 +65,8 @@ export class Voice {
     const pcm = concat(this.pending);
     this.pending = [];
     this.pendingLength = 0;
-    this.queue = this.queue.then(async () => {
-      const id = await this.id;
-      if (!id) return;
-      const r = await fetch(`/api/3d/asr/${id}`, { method: 'POST', body: pcm.buffer as ArrayBuffer });
-      if (r.ok && this.recording) this.onText((await r.json()).text);
-    }).catch(() => {});
+    const asr = this.asr;
+    this.queue = this.queue.then(() => asr?.send(pcm)).catch(() => {});
   }
 
   // Release: the final transcript ('' if nothing was said).
@@ -68,28 +76,16 @@ export class Voice {
     this.node?.disconnect();
     this.src?.disconnect();
     this.flush();
-    await Promise.race([this.queue, new Promise((r) => setTimeout(r, 3000))]);
-    const id = (await this.id) ?? 'none';
-    const r = await fetch(`/api/3d/asr/${id}/finish`, { method: 'POST', body: wav(concat(this.all)) });
-    return r.json();
+    const sent = await Promise.race([this.queue.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 3000))]);
+    const asr = this.asr;
+    this.asr = null;
+    const t0 = Date.now();
+    const text = asr && sent ? await asr.finish() : null;
+    asr?.close();
+    if (text) return { text, via: 'realtime', ms: Date.now() - t0 };
+    const pcm = concat(this.all);
+    if (pcm.length * 2 < 2000) return { text: '', via: 'none', ms: Date.now() - t0 };
+    const r = await transcribe(toWav(pcm), undefined, KEYWORDS);
+    return { text: r.transcript, via: 'batch', ms: Date.now() - t0 };
   }
-}
-
-function concat(parts: Int16Array[]) {
-  const out = new Int16Array(parts.reduce((n, p) => n + p.length, 0));
-  let off = 0;
-  for (const p of parts) out.set(p, off), (off += p.length);
-  return out;
-}
-
-function wav(pcm: Int16Array) {
-  const buf = new ArrayBuffer(44 + pcm.length * 2);
-  const v = new DataView(buf);
-  const str = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-  str(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE');
-  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, pcm.length * 2, true);
-  new Int16Array(buf, 44).set(pcm);
-  return new Blob([buf], { type: 'audio/wav' });
 }

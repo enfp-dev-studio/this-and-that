@@ -8,6 +8,7 @@ const ThreeMode = lazy(() => import('@/components/three-mode').then((m) => ({ de
 import { Stage } from '@/components/stage';
 import { RefPanel } from '@/components/ref-panel';
 import { useEditor } from '@/hooks/use-editor';
+import { PasscodeGate } from '@/components/passcode-gate';
 
 // One gesture: point and talk. The canvas and the talk button are always
 // there; everything else appears when it matters or lives in the details sheet.
@@ -50,6 +51,7 @@ export function App() {
           <ImageChrome onMode={switchMode} />
         </>
       )}
+      <PasscodeGate />
     </div>
   );
 }
