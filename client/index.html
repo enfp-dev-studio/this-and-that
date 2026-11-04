@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>This &amp; That 3D</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="stage"></div>
+
+    <header class="brand">
+      <b>This &amp; That</b> <span>3D</span>
+      <small>그리면서 말하세요 · 오른쪽 버튼/손가락으로 회전</small>
+    </header>
+
+    <aside class="tools">
+      <div class="group" id="views">
+        <button data-view="front" title="정면">정면</button>
+        <button data-view="side" title="측면">측면</button>
+        <button data-view="top" title="위">위</button>
+        <button data-view="three" title="3/4">3/4</button>
+      </div>
+      <div class="group" id="planes">
+        <button data-plane="view" class="on" title="화면과 나란한 면에 그리기">시점면</button>
+        <button data-plane="ground" title="바닥과 나란한 면에 그리기">바닥면</button>
+      </div>
+      <div class="group">
+        <button id="undo" title="되돌리기 (Ctrl+Z)">되돌리기</button>
+        <button id="toggle-sketch" title="스케치 보이기/숨기기">스케치</button>
+        <button id="clear" title="모두 지우기">지우기</button>
+      </div>
+    </aside>
+
+    <section class="views-strip" id="strip"></section>
+
+    <section class="result" id="result" hidden>
+      <div class="say" id="say"></div>
+      <div class="chips" id="chips"></div>
+    </section>
+
+    <footer class="talk">
+      <div class="caption" id="caption"></div>
+      <div class="row">
+        <input id="typed" placeholder="말 대신 입력해도 돼요 (예: 의자야, 등받이는 이렇게)" />
+        <button id="talk" class="talk-btn" title="누르고 말하기 (Space)">
+          <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2Z"/></svg>
+        </button>
+        <button id="make" class="make-btn" title="말없이 만들기 (Enter)">만들기</button>
+      </div>
+      <div class="status" id="status">펜/왼쪽 버튼으로 그리고, 마이크를 누른 채 말하세요</div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

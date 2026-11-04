@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "tt3d-server", "runtimeExecutable": "npm", "runtimeArgs": ["run", "server"], "port": 8795 },
+    { "name": "tt3d-vite", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 5185 }
+  ]
+}
