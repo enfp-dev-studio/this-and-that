@@ -69,12 +69,12 @@ const RULES = `Deictic words such as 이거/이것/이건/여기/이쪽 (this, h
 
 // Primary path: Spark watches the drawing video with the voice track.
 // A transcript from Voice Transcribe, when given, guards against mishearing.
-export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { model?: string; withTimes?: boolean; effort?: string; transcript?: string; trace?: Trace; fps?: number; heard?: boolean; ops?: boolean; places?: Map<number, string> } = {}) {
+export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { model?: string; withTimes?: boolean; effort?: string; transcript?: string; trace?: Trace; fps?: number; heard?: boolean; ops?: boolean; places?: Map<number, string>; parts?: string } = {}) {
   const heard = opts.transcript ? `\nA speech recogniser heard: "${opts.transcript}". Trust these words; use the audio for when each word is said.\n` : '';
   const text = `This video shows a person refining a picture. While speaking (often Korean), they draw numbered marks on it with a pen; each mark has its own colour and a numbered badge, and a white dot shows the pen tip while it is moving. Listen to the audio and watch when each mark is drawn.
 
 ${RULES}${opts.places ? `\n${REF_RULES}` : ''}
-${heard}
+${heard}${opts.parts ?? ''}
 The marks:
 ${markList(strokes, !!opts.withTimes, opts.places)}
 
@@ -321,4 +321,65 @@ ${lines.join('\n')}
 Make exactly these changes. Keep everything else exactly as in the first image: composition, framing, every other object, lighting and art style. The output must not contain any of the marks, lines or numbers from the second image.`;
   const jpeg = (b: Buffer) => sharp(b).jpeg({ quality: 92 }).toBuffer();
   return editImage(prompt, [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, museParams(mode));
+}
+
+// ---------- parts: what is in the picture, found once in the background ----------
+
+// A named part, its box on a 0–1000 grid, its parent (character → outfit →
+// cuff → lace) and its mirror pair (left/right counterpart); 0 = none.
+export type Part = { id: number; name: string; box: number[]; parent: number; pair: number };
+
+const PARTS_SCHEMA = {
+  type: 'object',
+  properties: {
+    parts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer', description: 'From 1' },
+          name: { type: 'string', description: 'Short English name, with left/right as the viewer sees the picture where it matters' },
+          box: { type: 'array', items: { type: 'integer' }, description: '[x_min, y_min, x_max, y_max] on a 0-1000 grid' },
+          parent: { type: 'integer', description: 'id of the part this belongs to, or 0' },
+          pair: { type: 'integer', description: 'id of its left/right counterpart (the other cuff, earring, eye), or 0' },
+        },
+        required: ['id', 'name', 'box', 'parent', 'pair'],
+      },
+    },
+  },
+  required: ['parts'],
+};
+
+export async function findParts(small: Small, trace?: Trace): Promise<Part[]> {
+  const text = `List the parts of this picture someone might want to edit, as a hierarchy where it helps (character → outfit → left cuff → lace). Include small details: jewelry, hair accessories, ornaments, brooches, emblems, eyes, hands, lace, embroidery, buttons, and the main objects and background areas. Give each a short name and a tight box, its parent, and its left/right counterpart if it has one. At most 40 parts.`;
+  const r = await sparkJson<{ parts: Part[] }>({ effort: 'minimal', content: [{ type: 'text', text }, imagePart(small.jpeg, 'image/jpeg')], schema: PARTS_SCHEMA, trace, label: 'spark parts' });
+  return r.parts.filter((p) => p.box?.length === 4);
+}
+
+// For Spark's mapping: the named parts each mark covers (the most specific
+// first) and their pairs, so "이 장식" or "match the other one" resolve.
+export function partsHint(strokes: Stroke[], parts: Part[], width: number, height: number) {
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  const px = (p: Part) => ({ left: (p.box[0] * width) / 1000, top: (p.box[1] * height) / 1000, right: (p.box[2] * width) / 1000, bottom: (p.box[3] * height) / 1000 });
+  const area = (b: { left: number; top: number; right: number; bottom: number }) => Math.max(0, b.right - b.left) * Math.max(0, b.bottom - b.top);
+  const lines = strokes.map((s) => {
+    const m = strokeBox(s);
+    const covered = parts
+      .map((p) => {
+        const b = px(p);
+        const inter = area({ left: Math.max(b.left, m.left), top: Math.max(b.top, m.top), right: Math.min(b.right, m.right), bottom: Math.min(b.bottom, m.bottom) });
+        return { p, size: area(b), share: inter / Math.max(1, Math.min(area(b), area(m))) };
+      })
+      .filter((c) => c.share > 0.4)
+      .sort((a, b) => a.size - b.size)
+      .slice(0, 3)
+      .map(({ p }) => {
+        const parent = byId.get(p.parent)?.name;
+        const pair = byId.get(p.pair)?.name;
+        return `"${p.name}"${parent ? ` (part of "${parent}")` : ''}${pair ? `, its pair: "${pair}"` : ''}`;
+      });
+    return covered.length ? `- mark ${s.mark} is over: ${covered.join('; ')}` : '';
+  });
+  const text = lines.filter(Boolean).join('\n');
+  return text ? `\nNamed parts under the marks on the picture (found automatically, may be imperfect; use the names when they fit):\n${text}\n` : '';
 }

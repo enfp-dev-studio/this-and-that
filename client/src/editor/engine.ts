@@ -26,6 +26,8 @@ export type Version = { url: string; imageId: Promise<string> };
 // A reference picture: a character sheet, a style, or a detail like an ornament.
 // Pinned ones go to every edit; others only when a mark is drawn on them.
 export type Ref = { id: string; url: string; imageId: Promise<string>; pinned: boolean };
+// A named part of the picture (Spark, in the background): box on a 0–1000 grid.
+export type Part = { id: number; name: string; box: number[]; parent: number; pair: number };
 export type StepState = 'pending' | 'active' | 'done';
 export type Mode = 'empty' | 'idle' | 'recording' | 'processing' | 'review';
 export type Fit = { x: number; y: number; w: number; h: number };
@@ -125,6 +127,8 @@ class Editor {
   private preview: HTMLImageElement | null = null; // instant edits, shown while the rest is edited
   private strokes: Stroke[] = [];
   private drawing: { stroke: Stroke; surface: Surface } | null = null;
+  private parts: { url: string; list: Part[] } | null = null; // for the current version
+  private hover: Part | null = null; // the part under the pen or mouse
 
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -167,7 +171,8 @@ class Editor {
     const listeners = new AbortController();
     const on = <K extends keyof HTMLElementEventMap>(type: K, f: (e: HTMLElementEventMap[K]) => void) => canvas.addEventListener(type, f, { signal: listeners.signal });
     on('pointerdown', (e) => this.pointerDown(surface, e));
-    on('pointermove', (e) => this.pointerMove(e));
+    on('pointermove', (e) => (this.drawing ? this.pointerMove(e) : this.hoverAt(surface, e)));
+    on('pointerleave', () => this.setHover(null));
     on('pointerup', () => this.endStroke());
     on('pointercancel', () => this.endStroke());
     this.draw();
@@ -235,6 +240,9 @@ class Editor {
     ctx.scale(r.k, r.k);
     const unit = Math.max(image.naturalWidth, image.naturalHeight) / 160;
     for (const s of strokes) this.drawStroke(ctx, image, s, unit, working ? 0.55 : 1);
+    if (surface.key === 'target' && this.hover && !this.drawing && (this.snapshot.mode === 'idle' || this.snapshot.mode === 'recording')) {
+      this.drawPart(ctx, image, this.hover, r.k);
+    }
     ctx.restore();
   }
 
@@ -313,6 +321,64 @@ class Editor {
     ctx.textBaseline = 'middle';
     ctx.fillText(String(s.mark), bx, by + r * 0.05);
     ctx.globalAlpha = 1;
+  }
+
+  // ---------- parts: hover a part to see its name ----------
+
+  private async loadParts(v: Version) {
+    try {
+      const imageId = await v.imageId;
+      const { parts } = await (await fetch(`/api/images/${imageId}/parts`)).json();
+      if (this.current() === v) this.parts = { url: v.url, list: parts ?? [] };
+    } catch {
+      // Optional: without parts there is just no hover label.
+    }
+  }
+
+  private hoverAt(surface: Surface, e: PointerEvent) {
+    if (surface.key !== 'target' || e.pointerType === 'touch' || e.buttons || !this.parts || this.parts.url !== this.current()?.url) return;
+    const img = surface.image!;
+    const p = this.toImage(surface, e);
+    const x = (p.x / img.naturalWidth) * 1000, y = (p.y / img.naturalHeight) * 1000;
+    // The most specific part: the smallest box under the point.
+    const size = (q: Part) => (q.box[2] - q.box[0]) * (q.box[3] - q.box[1]);
+    const under = this.parts.list.filter((q) => x >= q.box[0] && x <= q.box[2] && y >= q.box[1] && y <= q.box[3]).sort((a, b) => size(a) - size(b));
+    this.setHover(under[0] ?? null);
+  }
+
+  private setHover(part: Part | null) {
+    if (part === this.hover) return;
+    this.hover = part;
+    this.draw();
+  }
+
+  // The hovered part's box and name (with its parent), in the theme's colours.
+  private drawPart(ctx: CanvasRenderingContext2D, image: HTMLImageElement, part: Part, k: number) {
+    const [x0, y0, x1, y1] = part.box.map((v, i) => (v * (i % 2 ? image.naturalHeight : image.naturalWidth)) / 1000);
+    const parent = this.parts?.list.find((q) => q.id === part.parent)?.name;
+    const label = parent ? `${parent} › ${part.name}` : part.name;
+    const px = 1 / k; // one CSS pixel in image units
+    ctx.save();
+    ctx.setLineDash([6 * px, 4 * px]);
+    ctx.lineWidth = 1.5 * px;
+    ctx.strokeStyle = themeVar('--primary');
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.setLineDash([]);
+    ctx.font = `500 ${13 * px}px ${getComputedStyle(document.body).fontFamily}`;
+    const w = ctx.measureText(label).width + 16 * px, h = 24 * px;
+    const lx = Math.min(Math.max(x0, 0), image.naturalWidth - w), ly = y0 - h - 4 * px < 0 ? y1 + 4 * px : y0 - h - 4 * px;
+    ctx.fillStyle = themeVar('--popover');
+    ctx.strokeStyle = themeVar('--border');
+    ctx.lineWidth = px;
+    ctx.beginPath();
+    ctx.roundRect(lx, ly, w, h, 6 * px);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = themeVar('--popover-foreground');
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, lx + 8 * px, ly + h / 2);
+    ctx.restore();
   }
 
   private toImage(surface: Surface, e: PointerEvent): Point {
@@ -438,6 +504,7 @@ class Editor {
     const v: Version = { url, imageId: upload(url) };
     v.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
     this.set({ mode: 'idle', versions: [v], index: 0, result: null, compare: false, marks: 0, ...this.emptyPanel() });
+    this.loadParts(v);
     this.draw();
   }
 
@@ -450,6 +517,7 @@ class Editor {
     if (mode === 'processing' || mode === 'recording' || index < 0 || index >= versions.length) return;
     await this.show(versions[index].url);
     this.set({ mode: 'idle', index, result: null, compare: false, marks: 0, ...this.emptyPanel() });
+    this.loadParts(versions[index]);
     this.draw();
   }
   undo = () => this.goTo(this.snapshot.index - 1);
@@ -462,6 +530,7 @@ class Editor {
     this.closeTrial();
     await this.show(result.url);
     this.set({ mode: 'idle', versions: [...versions.slice(0, index + 1), result], index: index + 1, result: null, compare: false, marks: 0, ...this.emptyPanel() });
+    this.loadParts(result);
     this.draw();
   }
 

@@ -16,7 +16,7 @@ import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { editImage, transcribe, type Mask } from './meta.ts';
-import { editAreas, guideImage, museEdit, museEditSpoken, museParams, touchesAreas, type MuseMode, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { editAreas, findParts, guideImage, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
@@ -35,7 +35,7 @@ const newId = () => randomUUID().slice(0, 8);
 
 // Uploads are scaled to ≤2048 px; `k` maps the client's pixel coordinates
 // (the image as uploaded) to the stored ones.
-type StoredImage = { id: string; png: Buffer; width: number; height: number; k: number; small: Promise<Small> };
+type StoredImage = { id: string; png: Buffer; width: number; height: number; k: number; small: Promise<Small>; parts?: Promise<Part[]>; partsReady?: Part[] };
 const images = new Map<string, StoredImage>();
 
 async function storeImage(buf: Buffer, id = newId()): Promise<StoredImage> {
@@ -47,6 +47,20 @@ async function storeImage(buf: Buffer, id = newId()): Promise<StoredImage> {
   const img: StoredImage = { id, png, width, height, k, small: smallCopy(png) };
   images.set(id, img);
   return img;
+}
+
+// The picture's named parts: one Spark call in the background, once per image.
+// Optional: nothing waits for it, and SAM at each stroke still makes the masks.
+function partsOf(img: StoredImage) {
+  img.parts ??= (async () => {
+    const t0 = performance.now();
+    const parts = await findParts(await img.small);
+    img.partsReady = parts;
+    console.log(`[parts ${img.id}] ${parts.length} parts in ${Math.round(performance.now() - t0)} ms`);
+    return parts;
+  })();
+  img.parts.catch((e) => console.error(`[parts ${img.id}]`, e.message));
+  return img.parts;
 }
 
 const scaleStroke = (s: Stroke, k: number): Stroke => (k === 1 ? s : { ...s, points: s.points.map((p) => ({ x: p.x * k, y: p.y * k, t: p.t })) });
@@ -177,7 +191,10 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   const [asrResult, mp4] = await Promise.all([asr, video]);
   let edits: Edit[];
   try {
-    const r = await T('spark', () => understandVideo(mp4, composed?.strokes ?? strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant, places: composed?.places }));
+    // Named parts if the background pass is already done; never waited for.
+    const parts = img.partsReady ? partsHint(strokes, img.partsReady, img.width, img.height) : undefined;
+    if (parts) writeFileSync(join(dir, 'parts-hint.txt'), parts);
+    const r = await T('spark', () => understandVideo(mp4, composed?.strokes ?? strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant, places: composed?.places, parts }));
     edits = r.edits;
     job.transcript ||= r.transcript;
     job.via = 'spark-video';
@@ -400,6 +417,11 @@ createServer(async (req, res) => {
       if (parts[3]) return sendFile(res, join(jobsDir, parts[2].replace(/\W/g, ''), parts[3].replace(/[^\w.]/g, '')));
       const job = jobs.get(parts[2]);
       return job ? send(res, 200, { ...job, elapsedMs: Date.now() - job.startedAt }) : send(res, 404, { error: 'no such job' });
+    }
+    if (parts[0] === 'api' && parts[1] === 'images' && parts[2] && parts[3] === 'parts') {
+      const img = images.get(parts[2]);
+      if (!img) return send(res, 404, { error: 'no such image' });
+      return send(res, 200, { parts: await partsOf(img).catch(() => []) });
     }
     if (parts[0] === 'api' && parts[1] === 'images' && parts[2]) {
       const img = images.get(parts[2].replace(/\.jpg$/, ''));
