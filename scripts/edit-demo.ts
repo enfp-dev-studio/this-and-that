@@ -513,31 +513,22 @@ await card(
   6,
 );
 // next: 3D
-await card([{ text: 'The same gesture, in 3D.', size: 72, weight: 600 }, { text: 'Strokes say where and what shape; the model does the rest.', size: 44, color: gray }], 3.5);
-if (existsSync(join(demo, 'helmet.timing.json'))) {
-  // A knight's helmet from a sketch, then horns and wings drawn on it as guides, then painted.
-  const t = timing('helmet');
-  const D = dur(join(demo, 'helmet.mp4'));
-  const steps = t.steps!, paint = t.paint!, painted = t.painted!;
-  // The helmet stands about 0.45 m tall, the horns reach 0.75 m: close in on it.
-  const c = { x: 800, y: 560 };
-  const zoom: Key[] = [
-    { t: 0.5, z: 1, x: 800, y: 500 },
-    { t: 1.5, z: 1.5, ...c },
-    { t: paint - 1.2, z: 1.5, ...c },
-    { t: paint - 0.3, z: 1.05, x: 800, y: 500 },
-    { t: paint + 1.2, z: 1.05, x: 800, y: 500 },
-    { t: painted - 0.5, z: 1.5, ...c },
-  ];
-  // Real time while drawing and talking and while the parts grow and turn; each wait cut, its time shown.
+await card([{ text: 'The same gesture, on a 3D model.', size: 72, weight: 600 }, { text: 'Draw the shape on it and say what it is: the strokes become the parts.', size: 44, color: gray }], 3.5);
+if (existsSync(join(demo, 'model3d.timing.json'))) {
+  // A detailed model opened (the Sample model), horns drawn on it and said, then
+  // a wing outline: the parts follow the strokes. No paint: it would repaint the
+  // model's own textures.
+  const t = timing('model3d');
+  const steps = t.steps!;
+  const zoom: Key[] = [{ t: 0, z: 1.08, x: 800, y: 470 }];
   const segs: Seg[] = [];
   let at = 0;
   for (const st of steps) {
     segs.push({ from: at, to: st.release + 0.1 }, { from: st.release + 0.1, to: st.done + 1.1, fast: true, wait: st.done - st.release });
-    at = st.done + 1.1; // the new parts have grown in
+    at = st.done + 1.1;
   }
-  segs.push({ from: at, to: paint + 0.4 }, { from: paint + 0.4, to: painted + 0.3, fast: true, wait: painted - paint }, { from: painted + 0.3, to: Math.min(D, painted + 5.3) });
-  await clip('helmet', { real: 0, fastUntil: 0, segs: segs.filter((g) => g.to - g.from > 0.05), subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
+  segs.push({ from: at, to: Math.min(t.paint! - 0.6, at + 3.2) });
+  await clip('model3d', { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
 }
 await card(
   [
@@ -546,6 +537,7 @@ await card(
     { text: 'Show it. Say it. Done.', size: 46, color: gray, gap: 44 },
     { text: 'Built with Meta’s Muse models', size: 38, color: gray },
     { text: 'github.com/enfp-dev-studio/this-and-that', size: 38, color: gray },
+    { text: '3D sample model: “SciFiHelmet” by Michael Pavlovic, CC0 (Khronos glTF Sample Assets)', size: 26, color: gray, gap: 28 },
   ],
   6,
 );

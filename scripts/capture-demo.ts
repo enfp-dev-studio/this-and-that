@@ -461,6 +461,80 @@ async function sceneHelmet(page: Page, rec: Recorder) {
   return painted ? 'result' : 'failed';
 }
 
+// Editing a high-quality model: the Sample model (SciFiHelmet) opened from the
+// menu, horns drawn on it and said, then a wing outline, then painted.
+async function sceneModel3d(page: Page, rec: Recorder) {
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.locator('[role=radio][aria-label="3D"]').click();
+  await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
+  await sleep(1200);
+  await rec.start('model3d');
+  await sleep(600);
+  const voiceAt = Date.now() / 1000;
+  await page.locator('button:has-text("Open")').click();
+  await sleep(500);
+  await page.locator('text=Sample model').click();
+  await page.waitForFunction(() => (window as any).stage?.model.children.some((c: any) => c.type === 'Group' && c.children.length), undefined, { timeout: 30_000 });
+  await sleep(800);
+  // Framed close, turning a moment.
+  const bb = await page.evaluate(() => {
+    const { THREE, stage } = window as any;
+    const b = new THREE.Box3().setFromObject(stage.model);
+    const c = b.getCenter(new THREE.Vector3());
+    stage.controls.target.set(c.x, c.y + 0.08, c.z);
+    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(1.25);
+    stage.camera.position.copy(stage.controls.target).add(d);
+    Object.assign(stage.controls, { autoRotate: true, autoRotateSpeed: 2.2 });
+    stage.controls.update();
+    return { min: b.min.toArray(), max: b.max.toArray() };
+  });
+  await sleep(2600);
+  const [x0, y0, z0] = bb.min, [x1, y1, z1] = bb.max;
+  const [w, h, d] = [x1 - x0, y1 - y0, z1 - z0], [cx, cy, cz] = [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2];
+  const horns = [-1, 1].map((k) => [[0.5, -0.25], [0.62, -0.1], [0.72, 0.08], [0.74, 0.28], [0.66, 0.45]].map(([u, v]) => [cx + k * u * w, y1 + v * h, cz]));
+  const wing = [[0.05, -0.2], [0.4, -0.45], [0.75, -0.95], [0.5, -0.85], [0.45, -1.15], [0.25, -0.9], [0.05, -1.05], [-0.05, -0.6], [0.02, -0.25]].map(([v, u]) => [x1 - 0.01, cy + v * h, cz + u * d]);
+  const steps = [
+    { say: 'Add horns like this.', draw: [['front', horns]] as const },
+    { say: 'Add wings here.', draw: [['side', [wing]]] as const },
+  ];
+  const done: { say: number; release: number; done: number; parts: string }[] = [];
+  for (const [i, st] of steps.entries()) {
+    if (i) await sleep(2600);
+    const say = Date.now() / 1000;
+    for (const [view, strokes] of st.draw) await page.evaluate(([v, s, c]) => (window as any).drawGuides(v, s, c), [view, strokes, st.say] as const);
+    const release = Date.now() / 1000;
+    await page.evaluate((text) => (window as any).make(text), st.say);
+    const parts = await page.evaluate(() => (window as any).builder.parts.map((p: any) => `${p.name}:${p.primitive}`).join(', '));
+    done.push({ say, release, done: Date.now() / 1000, parts });
+    log(`model3d: "${st.say}" ${(Date.now() / 1000 - release).toFixed(1)} s → ${parts}`);
+  }
+  await sleep(3000);
+  const pb = (await page.locator('button:has-text("Paint")').boundingBox())!;
+  await page.mouse.move(pb.x + pb.width / 2, pb.y + pb.height / 2, { steps: 12 });
+  await sleep(300);
+  const paintAt = Date.now() / 1000;
+  await page.mouse.down();
+  await sleep(80);
+  await page.mouse.up();
+  await page.waitForSelector('text=Muse Image is painting', { timeout: 10_000 }).catch(() => {});
+  const painted = await page.waitForSelector('text=Muse Image is painting', { state: 'detached', timeout: 120_000 }).then(() => true, () => false);
+  const paintedAt = Date.now() / 1000;
+  log(`model3d: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
+  await page.evaluate(() => Object.assign((window as any).stage.controls, { autoRotate: true, autoRotateSpeed: 1.6 }));
+  await sleep(5500);
+  const zero = await rec.stop('model3d');
+  const speech: Spoken[] = [];
+  for (const [i, st] of steps.entries()) {
+    const f = join(clipDir, `model3d-${i}.aiff`);
+    execFileSync('say', ['-v', VOICE, '-o', f, st.say]);
+    speech.push({ at: done[i].say - voiceAt + 0.3, dur: (await audioDurationMs(f)) / 1000, say: st.say });
+  }
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...speech.flatMap((_, i) => ['-i', join(clipDir, `model3d-${i}.aiff`)]), '-filter_complex', `${speech.map((p, i) => `[${i}:a]adelay=${Math.round(p.at * 1000)}|${Math.round(p.at * 1000)}[a${i}]`).join(';')};${speech.map((_, i) => `[a${i}]`).join('')}amix=inputs=${speech.length}:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'model3d.wav')]);
+  const rel = (t: number) => t - zero;
+  writeFileSync(join(out, 'model3d.timing.json'), JSON.stringify({ voice: join(clipDir, 'model3d.wav'), voiceAt: voiceAt - zero, release: rel(done[0].release), result: rel(done[0].done), steps: done.map((x) => ({ say: rel(x.say), release: rel(x.release), done: rel(x.done), parts: x.parts })), paint: rel(paintAt), painted: rel(paintedAt), speech }, null, 1));
+  return painted ? 'result' : 'failed';
+}
+
 async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
   // 3D through the mode switch (on camera), from a fresh page.
   await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -580,6 +654,7 @@ for (const name of wanted) {
     if (name === 'hold') results[name] = results.three === 'result' ? await sceneHold(page, rec) : 'skipped (no result from "three")';
     else if (name === 'chair') results[name] = await sceneChair(page, cdp, rec);
     else if (name === 'helmet') results[name] = await sceneHelmet(page, rec);
+    else if (name === 'model3d') results[name] = await sceneModel3d(page, rec);
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {
     results[name] = `error: ${String(e?.message ?? e).split('\n')[0]}`;
