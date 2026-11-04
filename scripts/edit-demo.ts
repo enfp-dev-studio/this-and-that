@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import sharp from 'sharp';
+import sharp, { type OverlayOptions } from 'sharp';
 
 const root = join(import.meta.dirname, '..');
 const demo = join(root, 'out', 'demo');
@@ -44,7 +44,7 @@ async function card(lines: Line[], seconds: number, image?: { file: string; widt
   });
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="${BG}"/>${texts.join('')}</svg>`;
   const png = join(work, `card-${seq}.png`);
-  const layers: sharp.OverlayOptions[] = img ? [{ input: img, left: Math.round((W - image!.width) / 2), top: Math.round(y + 30) }] : [];
+  const layers: OverlayOptions[] = img ? [{ input: img, left: Math.round((W - image!.width) / 2), top: Math.round(y + 30) }] : [];
   await sharp(Buffer.from(svg)).composite(layers).png().toFile(png);
   const out = join(work, `${String(seq++).padStart(2, '0')}-card.mp4`);
   ff(['-loop', '1', '-i', png, '-t', String(seconds), '-vf', `fade=in:0:8,fade=out:st=${seconds - 0.3}:d=0.3`, ...ENC, out]);
@@ -61,7 +61,21 @@ async function subtitle(text: string, file: string) {
 // ---------- clips ----------
 
 type Sub = { from: number; to: number; text: string };
-type Plan = { real: number; fastUntil: number; subs: Sub[] }; // real time until `real`, ×4 until `fastUntil`, then real time
+// Real time until `real`, ×4 until `fastUntil`, then real time; `zoom`: the
+// camera's keyframes (source time, zoom, focus in the clip's 1600×1000 px).
+type Key = { t: number; z: number; x: number; y: number };
+type Plan = { real: number; fastUntil: number; subs: Sub[]; zoom?: Key[] };
+
+// An ffmpeg expression easing (smoothstep) between keyframes, of time `T`.
+function eased(keys: Key[], pick: (k: Key) => number, T: string) {
+  let e = String(pick(keys.at(-1)!).toFixed(3));
+  for (let i = keys.length - 2; i >= 0; i--) {
+    const [a, b] = [keys[i], keys[i + 1]];
+    const u = `((${T}-${a.t.toFixed(2)})/${Math.max(0.01, b.t - a.t).toFixed(2)})`;
+    e = `if(lt(${T},${b.t.toFixed(2)}),${pick(a).toFixed(3)}+(${(pick(b) - pick(a)).toFixed(3)})*${u}*${u}*(3-2*${u}),${e})`;
+  }
+  return `if(lt(${T},${keys[0].t.toFixed(2)}),${pick(keys[0]).toFixed(3)},${e})`;
+}
 
 async function clip(name: string, plan: Plan) {
   const src = join(demo, `${name}.mp4`);
@@ -78,8 +92,13 @@ async function clip(name: string, plan: Plan) {
   if (!existsSync(x4)) await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="64"><rect width="120" height="64" rx="10" fill="#000" fill-opacity="0.7"/><text x="60" y="44" font-family="${FONT}" font-size="34" font-weight="700" fill="#fff" text-anchor="middle">×4</text></svg>`)).png().toFile(x4);
   inputs.push('-i', x4);
   const x4i = subFiles.length + 1;
-  // 1600×1000 → 1728×1080, centred on the app's dark backdrop.
-  const f: string[] = [`[0:v]scale=1728:1080,pad=${W}:${H}:96:0:color=0x0a0a0a,fps=30[v0]`];
+  // 1600×1000 on a 16:9 dark canvas (1778×1000), then the camera: zoompan
+  // crops around the focus at the keyframed zoom and scales to 1920×1080.
+  const keys = plan.zoom ?? [{ t: 0, z: 1, x: 800, y: 500 }];
+  const T = 'on/30', PADX = 89;
+  const z = eased(keys, (k) => k.z, T);
+  const fx = eased(keys, (k) => k.x + PADX, T), fy = eased(keys, (k) => k.y, T);
+  const f: string[] = [`[0:v]fps=30,pad=1778:1000:${PADX}:0:color=0x0a0a0a,zoompan=z='${z}':x='max(0,min(iw-iw/zoom,(${fx})-iw/zoom/2))':y='max(0,min(ih-ih/zoom,(${fy})-ih/zoom/2))':d=1:s=${W}x${H}:fps=30[v0]`];
   plan.subs.forEach((s, i) => f.push(`[v${i}][${i + 1}:v]overlay=0:0:enable='between(t,${s.from.toFixed(2)},${s.to.toFixed(2)})'[v${i + 1}]`));
   const v = `[v${plan.subs.length}]`;
   const fast = plan.fastUntil - plan.real > 1.5;
@@ -102,29 +121,67 @@ const builtAt = Number(/chair: \d+ parts ([\d.]+) s/.exec(log)?.[1] ?? 20);
 
 // The voice's phrases, as capture-demo built them (clipkit.buildClip): the
 // first at 400 ms, each next one after the last (at least 1.3 s) plus 350 ms.
-// The voice starts with the first stroke, ~1.45 s into the clip (2 s later
-// when a reference is dropped first).
 function speech(name: string, english: string[], startsAt: number): Sub[] {
   let at = 0.4;
-  return english.map((text, i) => {
+  const subs = english.map((text, i) => {
     const d = dur(join(demo, 'clips', `${name}-${i}.aiff`));
-    const sub = { from: startsAt + at - 0.5, to: startsAt + at + d + 0.7, text };
+    const sub = { from: startsAt + at - 0.3, to: startsAt + at + d + 0.7, text };
     at += Math.max(d, 1.3) + 0.35;
     return sub;
   });
+  // One line at a time: each cue ends before the next begins.
+  for (let i = 0; i < subs.length - 1; i++) subs[i].to = Math.min(subs[i].to, subs[i + 1].from - 0.05);
+  return subs;
 }
 
-function plan2d(name: string, english: string[], ref = false): Plan {
+// Where the picture (and an open reference) sit in the 1600×1000 capture,
+// as client/src/editor/engine.ts fits them (theme.css lengths at 16 px/rem).
+function fit(nw: number, nh: number, refOpen: boolean) {
+  const pad = 32, above = 88, below = 128, left = refOpen ? 416 + pad : 0;
+  const k = Math.min((1600 - left - 2 * pad) / nw, (1000 - above - below) / nh);
+  return { x: left + (1600 - left - nw * k) / 2, y: above + (1000 - above - below - nh * k) / 2, k };
+}
+// The open reference card (left-4, 26rem wide, under the chrome, below its header).
+const REF_FIT = (() => {
+  const k = Math.min(350 / 1600, 703 / 1600);
+  return { x: 17 + (414 - 1600 * k) / 2, y: 177 + (703 - 1600 * k) / 2, k };
+})();
+const size = (file: string) => {
+  const o = execFileSync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file]).toString();
+  return [Number(/pixelWidth: (\d+)/.exec(o)![1]), Number(/pixelHeight: (\d+)/.exec(o)![1])];
+};
+
+function plan2d(name: string, english: string[], image: string, ref = false): Plan {
   const D = dur(join(demo, `${name}.mp4`));
   const release = D - 3.5 - after(name);
-  return { real: release + 6.5, fastUntil: D - 4.2, subs: speech(name, english, 0.95 + (ref ? 2 : 0)) };
+  // The voice starts with the first stroke, ~1.95 s into the clip (measured
+  // against the strokes in the footage; 2 s later with a dropped reference).
+  const start = 1.95 + (ref ? 2 : 0);
+  // The camera: in on the marks while drawing and while the instructions
+  // appear, back out for the wait and the result.
+  const strokes = JSON.parse(readFileSync(join(demo, 'clips', `${name}.json`), 'utf8')).strokes as { points: { x: number; y: number }[]; on?: string }[];
+  const [nw, nh] = size(image);
+  const pic = fit(nw, nh, ref);
+  const pts = strokes.flatMap((s) => s.points.map((p) => (s.on ? { x: REF_FIT.x + p.x * REF_FIT.k, y: REF_FIT.y + p.y * REF_FIT.k } : { x: pic.x + p.x * pic.k, y: pic.y + p.y * pic.k })));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const [bx0, bx1, by0, by1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const zm = Math.max(1.12, Math.min(1.38, 1778 / ((bx1 - bx0) * 2.4 + 1), 1000 / ((by1 - by0) * 2.2 + 1)));
+  const focus = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
+  const out = release + 6.5;
+  const zoom: Key[] = [
+    { t: start - 0.4, z: 1, x: 800, y: 500 },
+    { t: start + 0.6, z: zm, ...focus },
+    { t: out, z: zm, ...focus },
+    { t: out + 0.9, z: 1, x: 800, y: 500 },
+  ];
+  return { real: out, fastUntil: D - 4.2, subs: speech(name, english, start), zoom };
 }
 
 // ---------- the cut (DEMO.md) ----------
 
 const gray = '#a1a1aa';
 // 0:00 the hook
-await clip('hook', plan2d('hook', ['This pauldron, spiky like this.']));
+await clip('hook', plan2d('hook', ['This pauldron, spiky like this.'], join(root, 'samples', 'illust', 'armor.jpg')));
 await card([{ text: 'This & That', size: 120, weight: 700 }, { text: 'Show it. Say it. Done.', size: 54, color: gray }], 3.2);
 // the problem
 await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }], 2.4);
@@ -141,14 +198,14 @@ await card(
   5,
   { file: join(root, 'out', 'bench-hard', 'grid', 'text-1.jpg'), width: 900 },
 );
-await clip('macaron', plan2d('macaron', ['Make this one chocolate.']));
+await clip('macaron', plan2d('macaron', ['Make this one chocolate.'], join(root, 'out', 'bench-hard', 'grid', 'original.png')));
 await card([{ text: '47 words, 2 rounds', size: 64, weight: 600, color: gray }, { text: 'vs', size: 40, color: gray }, { text: '“이거 초콜릿으로” — one tap, one sentence', size: 64, weight: 600 }], 3.4);
 // the demo: production details
 await card([{ text: 'Production details', size: 72, weight: 600 }, { text: process.env.CUFF ? 'a reference · a matching pair · several edits at once' : 'a reference · several edits at once', size: 40, color: gray }], 2.6);
-await clip('brooch', plan2d('brooch', ['Change this brooch…', '…to look like that.'], true));
+await clip('brooch', plan2d('brooch', ['Change this brooch…', '…to look like that.'], join(root, 'samples', 'illust', 'armor.jpg'), true));
 // The matching-pair scene fits the 3-minute cut only without it; CUFF=1 adds it back.
-if (process.env.CUFF && existsSync(join(demo, 'cuff.mp4'))) await clip('cuff', plan2d('cuff', ['This lace…', '…exactly like that one.']));
-await clip('three', plan2d('three', ['Remove this phone,', 'make this red,', 'and a small star here.']));
+if (process.env.CUFF && existsSync(join(demo, 'cuff.mp4'))) await clip('cuff', plan2d('cuff', ['This lace…', '…exactly like that one.'], join(root, 'samples', 'tasks', 'gothic-cuff.jpg')));
+await clip('three', plan2d('three', ['Remove this phone,', 'make this red,', 'and a small star here.'], join(root, 'samples', 'illust', 'keyvisual.jpg')));
 await clip('hold', { real: 99, fastUntil: 99, subs: [] });
 await card([{ text: 'Only what you marked changes.', size: 72, weight: 600 }], 2.6);
 // the evidence
@@ -179,7 +236,9 @@ await card([{ text: 'Next: the same gesture in 3D.', size: 72, weight: 600 }], 2
 {
   const D = dur(join(demo, 'chair.mp4'));
   // Recording starts 1 s before the pen; the chair is built builtAt s after that, then turns for 9 s.
-  await clip('chair', { real: 11, fastUntil: Math.min(D - 8, 1 + builtAt), subs: [{ from: 1.5, to: 5.5, text: 'It’s a chair,' }, { from: 5.5, to: 10.5, text: 'it’s a chair, the back goes like this.' }] });
+  // In on the sketch while it is drawn, out to watch it built and turning.
+  const zoom: Key[] = [{ t: 1, z: 1, x: 800, y: 500 }, { t: 2, z: 1.3, x: 800, y: 470 }, { t: 10.5, z: 1.3, x: 800, y: 470 }, { t: 11.5, z: 1.08, x: 800, y: 480 }];
+  await clip('chair', { real: 11, fastUntil: Math.min(D - 8, 1 + builtAt), subs: [{ from: 1.5, to: 5.4, text: 'It’s a chair,' }, { from: 5.5, to: 10.5, text: 'it’s a chair, the back goes like this.' }], zoom });
 }
 await card([{ text: 'This & That', size: 120, weight: 700 }, { text: 'Built with Meta’s Muse models', size: 46, color: gray, gap: 40 }, { text: 'github.com/enfp-dev-studio/this-and-that', size: 40, color: gray }], 4.5);
 
