@@ -35,7 +35,7 @@ const bakeMat = new THREE.ShaderMaterial({
     uDebug: { value: 0 },
     uTile: { value: new THREE.Vector2() },
   },
-  // uTile: the UV tile the mesh lives in (DamagedHelmet's v runs 1..2 and
+  // uTile: the UV tile the mesh lives in (some models' UVs run 1..2 and
   // relies on repeat wrapping), so the texel lands in the 0..1 target.
   vertexShader: `
     uniform vec2 uTile;

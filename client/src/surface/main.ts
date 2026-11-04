@@ -36,14 +36,15 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#2b2d32');
 scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
 const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 50);
-camera.position.set(0, 0.15, 3.6);
+camera.position.set(-2.4, 1.1, 5.0);
 const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.15, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.12;
 controls.mouseButtons = { LEFT: null as any, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
-controls.minDistance = 1.2;
-controls.maxDistance = 8;
+controls.minDistance = 1.5;
+controls.maxDistance = 10;
 const strokesGroup = new THREE.Group();
 scene.add(strokesGroup);
 
@@ -61,7 +62,8 @@ renderer.setAnimationLoop(() => {
 
 let mesh: THREE.Mesh | null = null;
 let baker: SurfaceBaker | null = null;
-new GLTFLoader().loadAsync('/3d/DamagedHelmet.glb').then((gltf) => {
+// Khronos glTF Sample Assets' SciFiHelmet (Michael Pavlovic, CC0; textures at 1024 px).
+new GLTFLoader().loadAsync('/3d/SciFiHelmet/SciFiHelmet.gltf').then((gltf) => {
   scene.add(gltf.scene);
   gltf.scene.traverse((o) => {
     if ((o as THREE.Mesh).isMesh && !mesh) mesh = o as THREE.Mesh;
@@ -323,15 +325,16 @@ async function penLoop(c: THREE.Vector3, n: THREE.Vector3, rx: number, ry: numbe
   fire('pointerup', pts[pts.length - 1], 0);
 }
 
-const CREST = { c: new THREE.Vector3(-0.02, 0.41, 0.45), n: new THREE.Vector3(-0.07, 0.665, 0.744).normalize() };
-const VIEW_A = { pos: new THREE.Vector3(-0.8, 0.55, 3.45), target: new THREE.Vector3() };
-const VIEW_B = { pos: new THREE.Vector3(1.7, 1.55, 2.3), target: new THREE.Vector3(0, 0.25, 0) };
+// The white crown plate above the visor.
+const CROWN = { c: new THREE.Vector3(0.015, 1.0, 0.6), n: new THREE.Vector3(0, 0.79, 0.61).normalize() };
+const VIEW_A = { pos: new THREE.Vector3(-2.4, 1.1, 5.0), target: new THREE.Vector3(0, 0.15, 0) };
+const VIEW_B = { pos: new THREE.Vector3(3.0, 2.6, 3.0), target: new THREE.Vector3(0, 0.5, 0) };
 // `voice`: 16 kHz PCM to send instead of the typed sentence.
-async function demoTake(text = '이 문양을 금색 초승달 엠블럼으로 바꿔 줘', voice?: Int16Array) {
+async function demoTake(text = '여기에 빨간 초승달 엠블럼을 새겨 줘', voice?: Int16Array) {
   while (baker?.undo());
   clearStrokes();
   await glide(VIEW_A.pos, VIEW_A.target, 900);
-  await penLoop(CREST.c, CREST.n, 0.2, 0.13);
+  await penLoop(CROWN.c, CROWN.n, 0.17, 0.11);
   caption.textContent = voice ? '' : `“${text}”`;
   await submit(voice ? { pcm: voice } : { text });
   await new Promise((r) => setTimeout(r, 600));

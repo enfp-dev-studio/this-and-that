@@ -1,8 +1,13 @@
 # Surface edit (3D, spike)
 
-Draw on a textured glTF model and say what to change ("이 문양을 금색 초승달 엠블럼으로 바꿔 줘"); only the marked part of its texture changes, and the change stays on the surface from every angle. It is the 2D feature run on a rendered view of the model, then baked back into the model's textures.
+Draw on a textured glTF model and say what to change ("여기에 빨간 초승달 엠블럼을 새겨 줘"); only the marked part of its texture changes, and the change stays on the surface from every angle. It is the 2D feature run on a rendered view of the model, then baked back into the model's textures.
 
-Page: `client/surface.html` (`client/src/surface/`). Model: Khronos DamagedHelmet (`samples/3d/DamagedHelmet.glb`, CC BY 4.0, from KhronosGroup/glTF-Sample-Assets; not committed here, copy it from the main checkout).
+Page: `client/surface.html` (`client/src/surface/`). Model: `samples/3d/SciFiHelmet/`, the same copy as 3D mode's sample model, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
+
+> © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Michael Pavlovic for Everything
+> © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Norbert Nopper for Conversion to glTF
+
+(DamagedHelmet was tried first, but its model files are also CC BY-NC 4.0, so it is not used.)
 
 ## How it works
 
@@ -13,7 +18,7 @@ Page: `client/surface.html` (`client/src/surface/`). Model: Khronos DamagedHelme
    - the point was visible in the view (depth test against a depth pass from the same camera),
    - it faced the camera (a facing weight, so oblique areas don't smear).
 
-   Color is transferred as a ratio, new albedo = old × result / render-without-emission, so the view's lighting isn't baked in. Where the edit painted, the emissive map is turned off (the helmet's glowing lines would otherwise shine through the new design). Contributions are accumulated with their weights, because DamagedHelmet's left and right halves share mirrored UVs: the half the camera saw outweighs the hidden one.
+   Color is transferred as a ratio, new albedo = old × result / render-without-emission, so the view's lighting isn't baked in. Where the edit painted, an emissive map (if the model has one) is turned off, so old glowing lines can't shine through the new design. Contributions are accumulated with their weights, because models often share mirrored UVs between left and right parts (SciFiHelmet's ear grilles do): the part the camera saw outweighs the hidden one.
 4. **Undo** restores the previous base-color and emissive textures; **전/후** (hold) shows the originals.
 
 ## Run
@@ -25,15 +30,15 @@ VITE_PORT=5201 META_PROXY=http://localhost:8811 npx vite          # dev, then op
 
 The Node proxy doesn't relay the realtime transcription socket, so speech is transcribed in one batch after release (~2 s more); through the Worker (`npm run worker:dev`) realtime works as in the 2D app.
 
-In the console, `demoTake()` replays a take: it orbits to the front, circles the forehead crest with pen events, sends "이 문양을 금색 초승달 엠블럼으로 바꿔 줘", bakes, and glides to a side angle. `demoTake('', pcm)` sends 16 kHz PCM as the voice instead.
+In the console, `demoTake()` replays a take: it orbits to the front-left view, circles the white crown plate above the visor with pen events, sends "여기에 빨간 초승달 엠블럼을 새겨 줘", bakes, and glides to an upper-right angle. `demoTake('', pcm)` sends 16 kHz PCM as the voice instead.
 
-## Measured (DamagedHelmet, 2048×1536 view)
+## Measured (2048×1536 view)
 
-- Typed sentence: 11–19 s from release to the baked texture; spoken (batch transcription): 23.5 s.
-- Spark read "Replace forehead pattern with gold crescent emblem" in every run, from text and from synthetic Korean speech.
+- SciFiHelmet, typed: 15.2 s from release to the baked texture; Spark read "Engrave red crescent emblem on helmet" for the circled crown plate.
+- Same pipeline on the earlier test model: 11–19 s typed, 23.5 s spoken (synthetic Korean speech, batch transcription).
 
 ## Limits
 
-- Mirrored UVs: an edit on one side of the helmet also appears on the other side, because both halves share the texels. The center strip (crest, visor, chin) has its own texels.
-- Only the base color and the emissive glow change; the normal map keeps the old relief, so an "engraving" is painted, not carved.
+- Mirrored UVs: an edit on a part whose UVs are shared with its mirror twin (SciFiHelmet's ear grilles) appears on both. Its large panels have their own texels.
+- Only the base color (and any emissive glow) change; the normal map keeps the old relief, so an "engraving" is painted, not carved.
 - The edit is seen from one view: parts of the marked region the camera couldn't see keep their old texture; a second take from another angle fills them.
