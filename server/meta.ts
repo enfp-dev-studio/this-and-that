@@ -4,7 +4,8 @@
 
 export const BASE_URL = 'https://api.meta.ai/v1';
 export const MODELS = {
-  spark: process.env.SPARK_MODEL ?? 'muse-spark-1.3',
+  // 1.2 at minimal effort answers this in ~12 s; 1.3 thinks ~3x longer for a similar part list.
+  spark: process.env.SPARK_MODEL ?? 'muse-spark-1.2',
   image: 'muse-image-1.0',
   transcribe: 'muse-voice-transcribe-1.0',
 };
