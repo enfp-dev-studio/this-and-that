@@ -1,0 +1,67 @@
+/*
+ * The theme: every colour and radius the UI uses. Swap the theme by replacing
+ * this file. Variable names follow shadcn/ui, plus:
+ *   --canvas, --canvas-dot   the editor's backdrop behind the image
+ *   --mark-1 … --mark-6      the numbered marks ①–⑥; keep these hues (red,
+ *                            blue, green, orange, purple, pink), since the
+ *                            server tells the models the marks by colour name
+ */
+
+:root {
+  --radius: 0.75rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --canvas: oklch(0.955 0 0);
+  --canvas-dot: oklch(0.88 0 0);
+  --mark-1: oklch(0.63 0.23 27);
+  --mark-2: oklch(0.6 0.2 255);
+  --mark-3: oklch(0.7 0.19 147);
+  --mark-4: oklch(0.77 0.17 65);
+  --mark-5: oklch(0.63 0.22 305);
+  --mark-6: oklch(0.65 0.24 355);
+}
+
+.dark {
+  --background: oklch(0.17 0 0);
+  --foreground: oklch(0.96 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.96 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.96 0 0);
+  --primary: oklch(0.96 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.96 0 0);
+  --muted: oklch(0.25 0 0);
+  --muted-foreground: oklch(0.68 0 0);
+  --accent: oklch(0.29 0 0);
+  --accent-foreground: oklch(0.96 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --canvas: oklch(0.13 0 0);
+  --canvas-dot: oklch(0.22 0 0);
+  --mark-1: oklch(0.66 0.23 27);
+  --mark-2: oklch(0.64 0.19 255);
+  --mark-3: oklch(0.74 0.19 147);
+  --mark-4: oklch(0.8 0.17 65);
+  --mark-5: oklch(0.67 0.21 305);
+  --mark-6: oklch(0.69 0.23 355);
+}
