@@ -5,6 +5,8 @@
  *   --mark-1 … --mark-6      the numbered marks ①–⑥; keep these hues (red,
  *                            blue, green, orange, purple, pink), since the
  *                            server tells the models the marks by colour name
+ *   --mark-halo, --mark-text the outline around a mark and its number
+ *   --sheen                  the light that sweeps regions still being edited
  */
 
 :root {
@@ -35,6 +37,9 @@
   --mark-4: oklch(0.77 0.17 65);
   --mark-5: oklch(0.63 0.22 305);
   --mark-6: oklch(0.65 0.24 355);
+  --mark-halo: oklch(1 0 0 / 85%);
+  --mark-text: oklch(1 0 0);
+  --sheen: oklch(1 0 0 / 55%);
 }
 
 .dark {
@@ -64,4 +69,7 @@
   --mark-4: oklch(0.8 0.17 65);
   --mark-5: oklch(0.67 0.21 305);
   --mark-6: oklch(0.69 0.23 355);
+  --mark-halo: oklch(1 0 0 / 85%);
+  --mark-text: oklch(1 0 0);
+  --sheen: oklch(1 0 0 / 50%);
 }

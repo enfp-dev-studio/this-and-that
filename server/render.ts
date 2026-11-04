@@ -8,9 +8,10 @@ import type { Mask } from './meta.ts';
 export type Point = { x: number; y: number; t: number }; // image pixels, ms since recording start
 export type Stroke = { mark: number; points: Point[] };
 
-export const COLORS = ['#ff3b30', '#0a84ff', '#34c759', '#ff9f0a', '#bf5af2', '#ff2d95', '#64d2ff', '#ffd60a'];
+// Six, like the client's --mark-1..6; the models are told the colour names.
+export const COLORS = ['#ff3b30', '#0a84ff', '#34c759', '#ff9f0a', '#bf5af2', '#ff2d95'];
 export const colorOf = (mark: number) => COLORS[(mark - 1) % COLORS.length];
-export const COLOR_NAMES = ['red', 'blue', 'green', 'orange', 'purple', 'pink', 'cyan', 'yellow'];
+export const COLOR_NAMES = ['red', 'blue', 'green', 'orange', 'purple', 'pink'];
 export const colorNameOf = (mark: number) => COLOR_NAMES[(mark - 1) % COLOR_NAMES.length];
 
 export function strokeBox(s: Stroke) {

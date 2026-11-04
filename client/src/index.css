@@ -36,6 +36,7 @@
   --color-mark-4: var(--mark-4);
   --color-mark-5: var(--mark-5);
   --color-mark-6: var(--mark-6);
+  --color-mark-text: var(--mark-text);
 }
 
 @layer base {
