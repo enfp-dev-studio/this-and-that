@@ -462,6 +462,43 @@ async function closeUp(name: string, image: string) {
   console.log(`close-up ${name}: ${region.width}×${region.height} px at ${left},${top} (×${(W / region.width).toFixed(1)} of the picture)`);
 }
 
+// The same proof for a surface edit in 3D: two frames of the take (before the
+// mark, after the result, same view), cropped around what changed.
+async function closeUpFrames(name: string, before: number, after: number, wait: number) {
+  const src = join(demo, `${name}.mp4`);
+  const fa = join(work, `close-${name}-a.png`), fb = join(work, `close-${name}-b.png`);
+  ff(['-ss', before.toFixed(2), '-i', src, '-frames:v', '1', fa]);
+  ff(['-ss', after.toFixed(2), '-i', src, '-frames:v', '1', fb]);
+  const { width: cw, height: ch } = await sharp(fa).metadata();
+  const [a, b] = [await sharp(fa).removeAlpha().raw().toBuffer(), await sharp(fb).removeAlpha().raw().toBuffer()];
+  // What the edit added: pixels that turned red (the emblem), inside the picture area.
+  const vivid = (p: Buffer, i: number) => p[i] - Math.max(p[i + 1], p[i + 2]) > 28;
+  let [x0, y0, x1, y1] = [cw!, ch!, 0, 0];
+  for (let y = 90; y < ch! - 140; y += 2)
+    for (let x = 0; x < cw!; x += 2) {
+      const i = (y * cw! + x) * 3;
+      if (vivid(b, i) && !vivid(a, i)) (x0 = Math.min(x0, x)), (y0 = Math.min(y0, y)), (x1 = Math.max(x1, x)), (y1 = Math.max(y1, y));
+    }
+  if (x1 <= x0) return console.log(`(no change found for ${name}'s close-up)`);
+  let h = Math.max(200, (y1 - y0) * 3), w = (h * 16) / 9;
+  if (w > cw!) (w = cw!), (h = (w * 9) / 16);
+  const region = { left: Math.round(Math.min(cw! - w, Math.max(0, (x0 + x1) / 2 - w / 2))), top: Math.round(Math.min(ch! - h, Math.max(0, (y0 + y1) / 2 - h / 2))), width: Math.round(w), height: Math.round(h) };
+  const tag = (text: string) => `<rect x="40" y="40" width="${40 + text.length * 22}" height="64" rx="12" fill="#000" fill-opacity="0.72"/><text x="60" y="84" font-family="${FONT}" font-size="36" font-weight="600" fill="#fff">${esc(text)}</text>`;
+  const waitPng = join(work, `wait-close-${name}.png`);
+  const { w: ww } = await waitLabel(wait, waitPng);
+  const still = async (file: string, label: string, extra: OverlayOptions[], out: string) => {
+    const base = await sharp(await sharp(file).extract(region).toBuffer()).resize(W, H).toBuffer();
+    await sharp(base).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${tag(label)}</svg>`) }, ...extra]).png().toFile(out);
+  };
+  const sb = join(work, `close-${name}-before.png`), sa = join(work, `close-${name}-after.png`);
+  await still(fa, 'Before', [], sb);
+  await still(fb, 'After', [{ input: waitPng, left: Math.round((W - ww) / 2), top: 44 }], sa);
+  const out = join(work, `${String(seq++).padStart(2, '0')}-close-${name}.mp4`);
+  ff(['-loop', '1', '-t', '1.4', '-i', sb, '-loop', '1', '-t', '2.0', '-i', sa, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-filter_complex', '[0:v]fps=30,format=yuv420p[a];[1:v]fps=30,format=yuv420p[b];[a][b]xfade=transition=fade:duration=0.5:offset=0.9[out]', '-map', '[out]', '-map', '2:a', ...ENC, '-t', '2.9', out]);
+  parts.push(out);
+  console.log(`close-up ${name}: ${region.width}×${region.height} px at ${region.left},${region.top} (×${(W / region.width).toFixed(1)})`);
+}
+
 // ---------- the cut (DEMO.md) ----------
 
 const gray = '#a1a1aa';
@@ -531,6 +568,15 @@ if (existsSync(join(demo, `${take3d}.timing.json`))) {
   segs.push({ from: at, to: Math.min(t.paint! - 0.6, at + 3.2) });
   await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
 }
+// A surface edit on the opened helmet: drawn and said, the result baked into its
+// textures, held from that view, then turned: it stays on the surface.
+if (existsSync(join(demo, 'emblem3d.timing.json'))) {
+  const t = timing('emblem3d');
+  const st = t.steps![0];
+  const D = dur(join(demo, 'emblem3d.mp4'));
+  await clip('emblem3d', { real: 0, fastUntil: 0, segs: [{ from: 0, to: st.release + 0.1 }, { from: st.release + 0.1, to: st.done + 0.6, fast: true, wait: st.done - st.release }, { from: st.done + 0.6, to: D }], subs: speech(t), zoom: [{ t: 0, z: 1.12, x: 800, y: 470 }], voice: { file: t.voice, at: t.voiceAt } });
+  await closeUpFrames('emblem3d', st.say - 0.3, st.done + 0.9, st.done - st.release);
+}
 await card(
   [
     { text: 'This & That', size: 120, weight: 700, gap: 36 },
@@ -538,7 +584,7 @@ await card(
     { text: 'Show it. Say it. Done.', size: 46, color: gray, gap: 44 },
     { text: 'Built with Meta’s Muse models', size: 38, color: gray },
     { text: 'github.com/enfp-dev-studio/this-and-that', size: 38, color: gray },
-    { text: take3d === 'sword' ? '3D sample model: “Antique Estoc” by Ulan Cabanilla and James Ray Cock, Poly Haven, CC0' : '3D sample model: “SciFiHelmet” by Michael Pavlovic, CC0 (Khronos glTF Sample Assets)', size: 26, color: gray, gap: 28 },
+    { text: '3D sample models, CC0: “Antique Estoc” by Ulan Cabanilla and James Ray Cock (Poly Haven); “SciFiHelmet” by Michael Pavlovic (Khronos glTF Sample Assets)', size: 24, color: gray, gap: 28 },
   ],
   6,
 );

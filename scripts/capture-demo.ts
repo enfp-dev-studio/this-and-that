@@ -553,6 +553,82 @@ async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword'
   return painted ? 'result' : 'failed';
 }
 
+// A surface edit on the opened helmet: a crescent drawn on its crown plate and
+// "Engrave a red crescent emblem here." (the view through the 2D pipeline,
+// baked into its textures), then a slow turn: it stays on the surface.
+async function sceneEmblem3d(page: Page, rec: Recorder) {
+  const say = 'Engrave a red crescent emblem here.';
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.locator('[role=radio][aria-label="3D"]').click();
+  await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
+  await sleep(1200);
+  await rec.start('emblem3d');
+  await sleep(600);
+  const voiceAt = Date.now() / 1000;
+  await page.locator('button:has-text("Open")').click();
+  await sleep(500);
+  await page.locator('text=Sample model: a sci-fi helmet').click();
+  await page.waitForFunction(() => (window as any).stage?.model.children.some((c: any) => c.type === 'Group' && c.children.length), undefined, { timeout: 30_000 });
+  await sleep(1200); // the app's own framing glides in first
+  // The crown plate above the visor and the front-left view (client/src/surface/main.ts's demo, in the model's own units).
+  const geo = await page.evaluate(() => {
+    const { THREE, stage } = window as any;
+    const group = stage.model.children.find((c: any) => c.type === 'Group');
+    const root = group.children[0].children[0];
+    root.updateMatrixWorld(true);
+    const at = (x: number, y: number, z: number) => root.localToWorld(new THREE.Vector3(x, y, z));
+    const k = root.getWorldScale(new THREE.Vector3()).x;
+    const c = at(0.015, 1.0, 0.6), n = new THREE.Vector3(0, 0.79, 0.61).normalize().transformDirection(root.matrixWorld);
+    stage.tween = null;
+    stage.camera.position.copy(at(-2.0, 2.0, 4.2));
+    stage.controls.target.copy(at(0, 0.5, 0));
+    stage.controls.update();
+    // A crescent on the plate, lifted a hair off it (so the pen lands on the surface).
+    const u = new THREE.Vector3(1, 0, 0).projectOnPlane(n).normalize(), v = new THREE.Vector3().crossVectors(n, u);
+    const R = 0.12 * k, deg = (d: number) => (d * Math.PI) / 180;
+    const ring = (cu: number, r: number, a0: number, a1: number, m: number) => Array.from({ length: m }, (_, i) => deg(a0 + ((a1 - a0) * i) / (m - 1))).map((a) => [cu + r * Math.cos(a), r * Math.sin(a)]);
+    const flat = [...ring(0, R, 50, 310, 16), ...ring(0.45 * R, 0.793 * R, 284, 76, 12)];
+    const pts = flat.map(([x, y]) => c.clone().addScaledVector(u, x).addScaledVector(v, y * 0.75).addScaledVector(n, 0.01 * k).toArray());
+    const s = c.clone().project(stage.camera);
+    return { pts, screen: [(s.x + 1) / 2, (1 - s.y) / 2] };
+  });
+  await sleep(1400);
+  const sayAt = Date.now() / 1000;
+  await page.evaluate(([p, c]) => (window as any).drawGuides(null, [p], c), [geo.pts, say] as const);
+  const release = Date.now() / 1000;
+  await page.evaluate((text) => (window as any).make(text), say);
+  const doneAt = Date.now() / 1000;
+  const surface = await page.evaluate(() => (window as any).lastSurface ?? null);
+  log(`emblem3d: ${surface ? `${(surface.ms / 1000).toFixed(1)} s, ${JSON.stringify(surface.edits)}` : 'no surface edit'}`);
+  await sleep(1400); // the result, still, in the same view
+  // A slow turn around it (100°), showing the emblem stays on the surface.
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) => {
+        const { THREE, stage } = window as any;
+        const t = stage.controls.target.clone(), p0 = stage.camera.position.clone().sub(t), start = performance.now();
+        const step = () => {
+          const k = Math.min(1, (performance.now() - start) / 6500), e = k * k * (3 - 2 * k);
+          stage.camera.position.copy(t).add(p0.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(100) * e));
+          stage.camera.lookAt(t);
+          stage.controls.update();
+          if (k < 1) setTimeout(step, 16);
+          else done();
+        };
+        step();
+      }),
+  );
+  await sleep(500);
+  const zero = await rec.stop('emblem3d');
+  const f = join(clipDir, 'emblem3d-0.aiff');
+  execFileSync('say', ['-v', VOICE, '-o', f, say]);
+  const speech: Spoken[] = [{ at: sayAt - voiceAt + 0.3, dur: (await audioDurationMs(f)) / 1000, say }];
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', f, '-af', `adelay=${Math.round(speech[0].at * 1000)}|${Math.round(speech[0].at * 1000)}`, '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'emblem3d.wav')]);
+  const rel = (t: number) => t - zero;
+  writeFileSync(join(out, 'emblem3d.timing.json'), JSON.stringify({ voice: join(clipDir, 'emblem3d.wav'), voiceAt: voiceAt - zero, release: rel(release), result: rel(doneAt), steps: [{ say: rel(sayAt), release: rel(release), done: rel(doneAt) }], crown: geo.screen, surface, speech }, null, 1));
+  return surface ? 'result' : 'failed';
+}
+
 async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
   // 3D through the mode switch (on camera), from a fresh page.
   await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -674,6 +750,7 @@ for (const name of wanted) {
     else if (name === 'helmet') results[name] = await sceneHelmet(page, rec);
     else if (name === 'model3d') results[name] = await sceneModel3d(page, rec);
     else if (name === 'sword') results[name] = await sceneModel3d(page, rec, 'sword');
+    else if (name === 'emblem3d') results[name] = await sceneEmblem3d(page, rec);
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {
     results[name] = `error: ${String(e?.message ?? e).split('\n')[0]}`;
