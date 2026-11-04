@@ -71,10 +71,17 @@ createServer(async (req, res) => {
       mkdirSync(dir, { recursive: true });
       body.views?.forEach((v: { name: string; image: string }, i: number) => writeFileSync(join(dir, `${i}-${v.name.replace(/\W+/g, '_')}.jpg`), Buffer.from(v.image.split(',')[1], 'base64')));
       writeFileSync(join(dir, 'request.json'), JSON.stringify({ ...body, views: body.views?.map((v: any) => ({ name: v.name, note: v.note })) }, null, 1));
-      const r = await perceive(body);
-      writeFileSync(join(dir, 'answer.json'), JSON.stringify(r, null, 1));
-      console.log(`[perceive] ${r.ms} ms, ${r.answer.parts?.length} parts: ${r.answer.subject} (${dir})`);
-      return send(res, 200, r);
+      // NDJSON: the sentence and each part as soon as Spark has written it, then the whole answer.
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' });
+      try {
+        const r = await perceive(body, (e) => res.write(JSON.stringify(e) + '\n'));
+        writeFileSync(join(dir, 'answer.json'), JSON.stringify(r, null, 1));
+        console.log(`[perceive] first ${r.firstMs} ms, done ${r.ms} ms, ${r.answer.parts?.length} parts: ${r.answer.subject} (${dir})`);
+      } catch (e: any) {
+        console.error('[perceive]', e);
+        res.write(JSON.stringify({ type: 'error', error: String(e?.message ?? e) }) + '\n');
+      }
+      return res.end();
     }
     // Static client.
     if (req.method === 'GET' && existsSync(DIST)) {

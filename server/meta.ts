@@ -56,6 +56,69 @@ export async function sparkJson<T>(opts: { system: string; content: any[]; schem
   });
 }
 
+// Streaming JSON answer, hedged: `copies` identical calls race, the first to
+// start writing its answer wins and the others are cancelled (Spark's thinking
+// time varies 2-3x between identical calls). `onText` gets the answer so far.
+export async function sparkStream(opts: { system: string; content: any[]; schema: object; effort?: string; copies?: number; timeoutMs?: number; onText?: (text: string) => void }): Promise<{ text: string; usage: Usage; firstMs: number }> {
+  const body = JSON.stringify({
+    model: MODELS.spark,
+    ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
+    stream: true,
+    messages: [
+      { role: 'system', content: opts.system },
+      { role: 'user', content: opts.content },
+    ],
+    response_format: { type: 'json_schema', json_schema: { name: 'Model', schema: opts.schema } },
+  });
+  const t0 = Date.now();
+  const copies = opts.copies ?? 3;
+  const controllers = Array.from({ length: copies }, () => new AbortController());
+  const timer = setTimeout(() => controllers.forEach((c) => c.abort()), opts.timeoutMs ?? 60_000);
+  let winner = -1;
+  const run = async (i: number) => {
+    const res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body,
+      signal: controllers[i].signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const dec = new TextDecoder();
+    let buf = '', text = '', usage: Usage, firstMs = 0;
+    for await (const chunk of res.body as any) {
+      buf += dec.decode(chunk, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:') || line === 'data: [DONE]') continue;
+        const ev = JSON.parse(line.slice(5));
+        if (ev.usage) usage = ev.usage;
+        const delta = ev.choices?.[0]?.delta?.content;
+        if (!delta) continue;
+        if (winner === -1) {
+          winner = i;
+          firstMs = Date.now() - t0;
+          controllers.forEach((c, j) => j !== i && c.abort());
+        }
+        if (winner !== i) return null;
+        text += delta;
+        opts.onText?.(text);
+      }
+    }
+    return winner === i ? { text, usage, firstMs } : null;
+  };
+  try {
+    const results = await Promise.allSettled(controllers.map((_, i) => run(i)));
+    const won = results[winner]?.status === 'fulfilled' ? (results[winner] as PromiseFulfilledResult<any>).value : null;
+    if (won) return won;
+    const err = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+    throw new Error(`spark ${err ? String(err.reason?.message ?? err.reason).slice(0, 300) : 'gave no answer'}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const imagePart = (dataUrl: string) => ({ type: 'image_url', image_url: { url: dataUrl } });
 export const textPart = (text: string) => ({ type: 'text', text });
 

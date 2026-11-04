@@ -94,7 +94,8 @@ export class Builder {
     stage.onTick((now) => this.tick(now));
   }
 
-  apply(parts: Part[], strokes: Stroke[]) {
+  // `partial`: parts still arriving from the stream; keep the ones not listed yet.
+  apply(parts: Part[], strokes: Stroke[], partial = false) {
     const byId = new Map(strokes.map((s) => [s.id, s]));
     const now = performance.now();
     const next = new Map<string, Built>();
@@ -127,11 +128,11 @@ export class Builder {
         this.remove(old, now, 0);
         this.built.delete(part.name);
       }
-      next.set(part.name, { part, key, mesh, anim: { t0: now, delay: old ? 0 : 120 + i * 110, from } });
+      next.set(part.name, { part, key, mesh, anim: { t0: now, delay: old || partial ? 0 : 120 + i * 110, from } });
     });
-    for (const b of this.built.values()) this.remove(b, now, 0);
+    for (const [name, b] of this.built) partial ? next.set(name, b) : this.remove(b, now, 0);
     this.built = next;
-    this.parts = parts;
+    if (!partial) this.parts = parts;
   }
 
   private dying: Built[] = [];

@@ -2,7 +2,7 @@
 // transcript and the strokes' 3D coordinates, and answers a part list:
 // primitives with transforms fitted to the strokes they explain.
 
-import { imagePart, sparkJson, textPart, type Usage } from './meta.ts';
+import { imagePart, sparkStream, textPart, type Usage } from './meta.ts';
 
 export type View = { name: string; note: string; image: string }; // image: JPEG data URL
 export type StrokeInfo = {
@@ -68,7 +68,7 @@ Images: the strokes from several viewpoints, each stroke in its own color with i
 Parts:
 - primitive: box, cylinder, sphere, cone, capsule or extrude.
 - center [x,y,z]; size [x,y,z] = full extents in the part's own frame before rotation. Cylinders, cones and capsules have their axis along their own Y: size[1] = length, size[0] = size[2] = diameter; a cone's tip points to its +Y.
-- rotation [x,y,z] in degrees, Euler XYZ; [0,0,0] when axis-aligned. Tilt only what is drawn tilted (a reclined back, a roof slope).
+- rotation [x,y,z] in degrees, Euler XYZ; [0,0,0] when axis-aligned. Tilt only what is drawn tilted (a reclined back, a roof slope). Signs: a positive X rotation tips an upright part's top toward +Z (the front), so a chair back reclining backward has a negative X rotation; a positive Z rotation tips the top toward -X.
 - extrude: a flat slab whose outline is one closed stroke (a house's gable wall, a sign, a leaf, a letter). profile = that stroke id, size[2] = thickness, center = where the outline's middle should end up (move it to the right depth); its rotation is ignored. profile = -1 for every other primitive.
 - color: a plausible real color as #rrggbb (the stroke colors in the images are only labels, never the object's colors) (wood brown, red roof, green leaves), or the color the user asks for. material: the closest hint.
 - strokes: the ids of the strokes this part explains. Every stroke is explained by some part, except pure gestures (a circle around a part or an arrow, meaning "this one").
@@ -81,7 +81,50 @@ Work fast: the user is waiting. Think briefly, read the coordinates straight off
 
 const SYSTEM = process.env.NO_FAST_HINT ? SYSTEM_BASE.replace(/\n\nWork fast:.*$/s, '') : SYSTEM_BASE;
 
-export async function perceive(req: { views: View[]; strokes: StrokeInfo[]; transcript: string; parts: Part[]; effort?: string }): Promise<{ answer: Answer; usage: Usage; ms: number }> {
+// Completed objects of the "parts" array in a JSON answer that is still being written.
+export function partsSoFar(text: string): Part[] {
+  const start = text.indexOf('"parts"');
+  if (start < 0) return [];
+  const open = text.indexOf('[', start);
+  if (open < 0) return [];
+  const out: Part[] = [];
+  let depth = 0, inStr = false, esc = false, objStart = -1;
+  for (let i = open + 1; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{' || c === '[') {
+      if (depth === 0 && c === '{') objStart = i;
+      depth++;
+    } else if (c === '}' || c === ']') {
+      if (depth === 0) break; // end of the parts array
+      depth--;
+      if (depth === 0 && c === '}' && objStart >= 0) {
+        try { out.push(JSON.parse(text.slice(objStart, i + 1))); } catch {}
+        objStart = -1;
+      }
+    }
+  }
+  return out;
+}
+
+const field = (text: string, name: string) => {
+  const m = text.match(new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+  if (!m) return null;
+  try { return JSON.parse(`"${m[1]}"`) as string; } catch { return null; }
+};
+
+export type PerceiveEvent =
+  | { type: 'say'; subject: string | null; say: string }
+  | { type: 'part'; part: Part; firstMs: number }
+  | { type: 'done'; answer: Answer; usage: Usage; ms: number; firstMs: number };
+
+export async function perceive(req: { views: View[]; strokes: StrokeInfo[]; transcript: string; parts: Part[]; effort?: string; copies?: number }, onEvent: (e: PerceiveEvent) => void = () => {}): Promise<{ answer: Answer; usage: Usage; ms: number; firstMs: number }> {
   const content: any[] = [];
   for (const v of req.views) {
     content.push(textPart(`${v.name}: ${v.note}`));
@@ -102,6 +145,25 @@ export async function perceive(req: { views: View[]; strokes: StrokeInfo[]; tran
   if (req.parts.length) content.push(textPart(`Current model (edit it):\n${JSON.stringify(req.parts)}`));
   content.push(textPart(`What the user said while drawing: ${req.transcript ? `"${req.transcript}"` : '(nothing; go by the sketch alone)'}`));
   const t0 = Date.now();
-  const { answer, usage } = await sparkJson<Answer>({ system: SYSTEM, content, schema: SCHEMA, effort: req.effort ?? 'low' });
-  return { answer, usage, ms: Date.now() - t0 };
+  let sent = 0, said = false, firstMs = 0;
+  const { text, usage, firstMs: fm } = await sparkStream({
+    system: SYSTEM,
+    content,
+    schema: SCHEMA,
+    effort: req.effort ?? 'minimal',
+    copies: req.copies ?? 3,
+    onText: (t) => {
+      firstMs ||= Date.now() - t0;
+      if (!said) {
+        const say = field(t, 'say');
+        if (say !== null && /"say"\s*:\s*"(?:[^"\\]|\\.)*"/.test(t)) (said = true), onEvent({ type: 'say', subject: field(t, 'subject'), say });
+      }
+      const parts = partsSoFar(t);
+      for (; sent < parts.length; sent++) onEvent({ type: 'part', part: parts[sent], firstMs });
+    },
+  });
+  const answer = JSON.parse(text) as Answer;
+  const ms = Date.now() - t0;
+  onEvent({ type: 'done', answer, usage, ms, firstMs: fm });
+  return { answer, usage, ms, firstMs: fm };
 }

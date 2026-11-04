@@ -37,6 +37,7 @@ $('clear').addEventListener('click', () => {
   $('result').hidden = true;
   $('strip').innerHTML = '';
   caption.textContent = '';
+  status('펜/왼쪽 버튼으로 그리고, 마이크를 누른 채 말하세요');
 });
 let sketchVisible = true;
 $('toggle-sketch').addEventListener('click', () => sketch.setVisible((sketchVisible = !sketchVisible)));
@@ -124,7 +125,7 @@ function showStrip(views: View[], thinking: boolean) {
 function showResult(subject: string, say: string, parts: Part[], ms: number) {
   $('result').hidden = false;
   $('say').textContent = say || subject;
-  $('chips').innerHTML = parts.map((p) => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join('') + `<span>Spark ${(ms / 1000).toFixed(1)} s</span>`;
+  $('chips').innerHTML = parts.map((p) => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join('') + `<span>Muse Spark ${(ms / 1000).toFixed(1)} s</span>`;
 }
 
 async function perceive(transcript: string) {
@@ -145,13 +146,38 @@ async function perceive(transcript: string) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ views, transcript, strokes: strokes.map(strokeInfo), parts: builder.parts }),
     });
-    const r = await res.json();
-    if (!res.ok) throw new Error(r.error);
-    builder.apply(r.answer.parts, sketch.strokes);
-    sketch.settle();
-    showResult(r.answer.subject, r.answer.say, r.answer.parts, r.ms);
-    status(`${r.answer.subject} · ${r.answer.parts.length}개 부품 · 그리고 말해서 고칠 수 있어요`);
-    (window as any).last = r;
+    if (!res.ok || !res.body) throw new Error(await res.text());
+    // NDJSON: parts arrive one by one while Spark writes them.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const got: Part[] = [];
+    let buf = '';
+    let said = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const ev = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (ev.type === 'say') said = ev.say;
+        if (ev.type === 'part') {
+          got.push(ev.part);
+          builder.apply(got, sketch.strokes, true);
+          status(`만드는 중… ${got.map((p) => p.name).join(', ')}`, true);
+        }
+        if (ev.type === 'error') throw new Error(ev.error);
+        if (ev.type === 'done') {
+          const a = ev.answer;
+          builder.apply(a.parts, sketch.strokes);
+          sketch.settle();
+          showResult(a.subject, a.say || said, a.parts, ev.ms);
+          status(`${a.subject} · ${a.parts.length}개 부품 · 첫 부품 ${(ev.firstMs / 1000).toFixed(1)} s · 그리고 말해서 고칠 수 있어요`);
+          (window as any).last = ev;
+        }
+      }
+    }
   } catch (e) {
     status(`실패: ${String(e).slice(0, 160)}`);
   } finally {
