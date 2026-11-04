@@ -236,13 +236,15 @@ class Editor {
     // The picture clears the floating chrome above and the toolbar below.
     const above = surface.key === 'target' ? Math.max(pad, themeLength('--chrome-height')) : pad;
     const below = surface.key === 'target' ? themeLength('--toolbar-clearance') : pad;
-    const aw = Math.max(1, w - pad * 2), ah = Math.max(1, h - above - below);
+    // An open reference floats at the left; the picture fits beside it.
+    const left = surface.key === 'target' && this.snapshot.activeRef ? themeLength('--ref-width') + pad : 0;
+    const aw = Math.max(1, w - left - pad * 2), ah = Math.max(1, h - above - below);
     const fit = Math.min(aw / img.naturalWidth, ah / img.naturalHeight);
     const zoom = surface.key === 'target' ? this.view : { zoom: 1, x: 0, y: 0 };
     const k = fit * zoom.zoom;
     const iw = img.naturalWidth * k, ih = img.naturalHeight * k;
     // Zoomed around the fitted centre, then panned.
-    return { x: (w - iw) / 2 + zoom.x, y: above + ah / 2 - ih / 2 + zoom.y, w: iw, h: ih, k };
+    return { x: left + (w - left - iw) / 2 + zoom.x, y: above + ah / 2 - ih / 2 + zoom.y, w: iw, h: ih, k };
   }
 
   // ---------- zoom and pan (the picture only) ----------
@@ -257,6 +259,12 @@ class Editor {
     this.view.x += px - (r2.x + u * r2.k);
     this.view.y += py - (r2.y + v * r2.k);
     this.viewChanged();
+  }
+
+  // Zoom around the middle of the screen (the zoom buttons).
+  zoomBy(factor: number) {
+    const el = this.target.el;
+    if (el) this.zoomAt(el.clientWidth / 2, el.clientHeight / 2, factor);
   }
 
   private panBy(dx: number, dy: number) {

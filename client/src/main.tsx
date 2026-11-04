@@ -11,7 +11,8 @@ createRoot(document.getElementById('root')!).render(
     <ThemeProvider defaultTheme="dark">
       <TooltipProvider delayDuration={300}>
         <App />
-        <Toaster position="top-center" />
+        {/* Below the floating chrome, in both modes. */}
+        <Toaster position="top-center" offset={{ top: 'var(--chrome-height)' }} />
       </TooltipProvider>
     </ThemeProvider>
   </StrictMode>,

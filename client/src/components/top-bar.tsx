@@ -1,4 +1,4 @@
-import { Box, Download, FlaskConical, ImageIcon, PanelRight, Redo2, Undo2 } from 'lucide-react';
+import { Box, Download, FlaskConical, ImageIcon, Moon, PanelRight, Redo2, Sun, Undo2 } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { LAB } from '@/lab';
@@ -13,6 +13,8 @@ import { SidePanel } from '@/components/side-panel';
 import { TasksMenu } from '@/components/tasks';
 import { OpenMenu } from '@/components/sample-menu';
 import { PenModes } from '@/components/toolbar';
+import { useTheme } from '@/components/theme-provider';
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export type AppMode = 'image' | '3d';
 
@@ -43,7 +45,7 @@ export function IconButton({ label, onClick, disabled, children }: { label: stri
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-touch" className="rounded-full" onClick={onClick} disabled={disabled} aria-label={label}>
+        <Button variant="ghost" size="icon-touch" onClick={onClick} disabled={disabled} aria-label={label}>
           {children}
         </Button>
       </TooltipTrigger>
@@ -85,7 +87,7 @@ export function Inspector({ tip, description, children }: { tip: string; descrip
       <Tooltip>
         <TooltipTrigger asChild>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon-touch" className="rounded-full" aria-label="Details">
+            <Button variant="ghost" size="icon-touch" aria-label="Details">
               <PanelRight />
             </Button>
           </SheetTrigger>
@@ -98,8 +100,29 @@ export function Inspector({ tip, description, children }: { tip: string; descrip
           <SheetDescription>{description}</SheetDescription>
         </SheetHeader>
         {children}
+        <div className="p-4">
+          <ThemeCard />
+        </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+// Light or dark, for both modes.
+function ThemeCard() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Theme</CardTitle>
+        <CardDescription>{theme === 'dark' ? 'Dark' : 'Light'}</CardDescription>
+        <CardAction>
+          <Button variant="outline" size="icon-touch" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Switch theme">
+            {theme === 'dark' ? <Sun /> : <Moon />}
+          </Button>
+        </CardAction>
+      </CardHeader>
+    </Card>
   );
 }
 
@@ -141,7 +164,7 @@ export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
           <OpenMenu disabled={busy} />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="touch" className="rounded-full" onClick={() => editor.exportCurrent()} disabled={!s.versions.length}>
+              <Button variant="ghost" size="touch" onClick={() => editor.exportCurrent()} disabled={!s.versions.length}>
                 <Download />
                 Export
               </Button>

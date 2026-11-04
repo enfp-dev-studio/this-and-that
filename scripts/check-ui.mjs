@@ -10,7 +10,7 @@ const root = join(import.meta.dirname, '..', 'client', 'src');
 const ALLOWED = new Set([
   'h-full', 'h-dvh', 'w-full', 'size-full', 'min-h-0', 'min-w-0',
   'w-(--panel-width)', 'w-(--status-width)', 'w-(--slider-width)', 'w-(--card-width)', 'w-(--ref-width)', 'w-(--type-width)', 'w-(--thumb-width)', 'max-w-(--caption-width)', 'max-w-(--callout-width)', 'w-(--ref-thumb-width)',
-  'h-(--chrome-height)',
+  'h-(--chrome-height)', 'w-(--bar-width)',
   'p-2', 'p-4', 'gap-2', 'gap-4',
 ]);
 const RULES = [

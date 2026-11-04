@@ -26,7 +26,7 @@ export function StatusChip() {
   } else if (s.mode === 'review') text = s.peek ? 'Before' : 'Hold the picture to see before · Keep or discard';
   if (!text) return null;
   return (
-    <Badge variant="secondary" className="absolute top-(--chrome-height) left-1/2 -translate-x-1/2 shadow-lg">
+    <Badge variant="outline" className="absolute top-(--chrome-height) left-1/2 -translate-x-1/2 bg-card shadow-lg">
       {s.mode === 'processing' ? <Loader2 className="animate-spin" /> : s.mode === 'recording' ? <Mic /> : null}
       {text}
     </Badge>
@@ -63,7 +63,7 @@ export function FailNotice() {
       ) : (
         text
       )}
-      <Button size="touch" className="rounded-full" onClick={() => editor.retry()}>
+      <Button size="touch" onClick={() => editor.retry()}>
         <RotateCcw />
         Try again
       </Button>

@@ -1,4 +1,4 @@
-import { Check, Circle, ImagePlus, Loader2, Moon, Pin, Sun, Trash2, Zap } from 'lucide-react';
+import { Check, Circle, ImagePlus, Loader2, Pin, Trash2, Zap } from 'lucide-react';
 import { editor, type StepState } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
@@ -13,7 +13,6 @@ import { TaskCard } from '@/components/tasks';
 import { refLetter } from '@/components/ref-panel';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
-import { useTheme } from '@/components/theme-provider';
 import { LAB } from '@/lab';
 
 const STEPS = [
@@ -33,7 +32,6 @@ function StepIcon({ state }: { state: StepState }) {
 // versions, and (lab) the experiment, the task and the progress steps.
 export function SidePanel() {
   const s = useEditor();
-  const { theme, setTheme } = useTheme();
   const working = s.mode === 'processing';
   const done = STEPS.filter((st) => s.steps[st.key] === 'done').length;
 
@@ -194,17 +192,6 @@ export function SidePanel() {
               ))}
             </CardContent>
           )}
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Theme</CardTitle>
-            <CardDescription>{theme === 'dark' ? 'Dark' : 'Light'}</CardDescription>
-            <CardAction>
-              <Button variant="outline" size="icon-touch" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Switch theme">
-                {theme === 'dark' ? <Sun /> : <Moon />}
-              </Button>
-            </CardAction>
-          </CardHeader>
         </Card>
       </div>
     </ScrollArea>
