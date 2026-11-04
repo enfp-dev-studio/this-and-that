@@ -4,7 +4,14 @@
 
 Built for the Meta Global AI Developer Hackathon (Indie track), November 2026.
 
-## How it works
+One app, two modes (the switch is in the top bar):
+
+- **Image** (the core): refine a picture by marking it and talking, as described below.
+- **3D sketch mode (beta)**: draw strokes in 3D space, rotate and keep drawing, and say what it is ("의자야, 등받이는 이렇게"). Muse Spark looks at the sketch from six sides and answers a part list that becomes a low-poly model in a few seconds; keep editing by drawing on the model and talking, and paint it with Muse Image. Open it with the **3D** switch or `http://localhost:8787/#3d`. Details: [docs/3d-sketch-mode.md](docs/3d-sketch-mode.md).
+
+Both modes use the same hold-to-talk button, realtime captions, QuickShape and theme, and one server.
+
+## How it works (image mode)
 
 The browser uploads the image once. While you talk, each mark goes to the server the moment its stroke ends, so SAM outlines it before you have finished speaking, and your voice streams to the server for realtime transcription. On release the server runs:
 
@@ -66,8 +73,10 @@ With a stylus, finger touches on the image are ignored (palm rejection, the pen 
 
 ## Repo layout
 
-- `client/`: Vite + React + Tailwind + shadcn/ui. `editor/engine.ts` is the editor without UI (canvas, Pointer Events, MediaRecorder, realtime captions, jobs, history); `components/` is the layout built only from shadcn components. Every colour and radius lives in `client/src/theme.css` (shadcn variables, light and dark, plus `--mark-1..6`), so a new theme is a new copy of that one file
-- `server/`: Node server. `meta.ts` (Meta API calls), `asr.ts` (realtime transcription relay), `render.ts` (video, guide image, paste-back), `pipeline.ts` (prompts and steps), `local.ts` (instant edits), `trace.ts` (timing and usage), `index.ts` (HTTP + jobs)
+- `client/`: Vite + React + Tailwind + shadcn/ui. `editor/engine.ts` is the image editor without UI (canvas, Pointer Events, MediaRecorder, realtime captions, jobs, history); `three/` is 3D sketch mode (three.js scene, 3D strokes and drawing planes, multi-view renders, part builder, paint projection; `three/engine.ts` is its engine, loaded only when 3D opens); `components/` is the layout built only from shadcn components (`three-mode.tsx` is the 3D view). Every colour and radius lives in `client/src/theme.css` (shadcn variables, light and dark, plus `--mark-1..6` and `--viewport`), so a new theme is a new copy of that one file
+- `server/`: one Node server for both modes. `meta.ts` (Meta API calls, shared: deadlines and retries, hedged streaming Spark for 3D), `asr.ts` (realtime transcription relay, shared), `render.ts` (video, guide image, paste-back), `pipeline.ts` (prompts and steps), `local.ts` (instant edits), `trace.ts` (timing and usage), `index.ts` (HTTP + jobs); `3d/routes.ts` (the `/api/3d/*` routes) and `3d/perceive.ts` (the 3D prompt, schema and streamed part parsing)
+- `scripts/`: `bench-spec.ts`, `bench-sketch.ts` (image mode), `bench-3d.ts` (replays a saved 3D request), `check-ui.mjs`
+- 3D sketch mode started as a separate spike; its commits are kept in this history (subtree merge), then it moved into the app
 - `m0/`: spike and benchmark scripts (synthetic Korean clips made with `say -v Yuna`; `clipkit.ts` builds and replays them, `bench.ts` times the app, `bench-vs.ts` compares it with text-only editing)
 - `samples/desk.png`: demo image generated with Muse Image during the hackathon
 

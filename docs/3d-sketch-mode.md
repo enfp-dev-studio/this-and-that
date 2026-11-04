@@ -1,8 +1,8 @@
-# This & That 3D (spike)
+# 3D sketch mode (beta)
 
 **Sketch it in 3D, say what it is, get a model.** Draw strokes in 3D space the way Blender's Grease Pencil does, rotate and keep drawing, and say what you're drawing ("의자야, 등받이는 이렇게"). Muse Spark looks at the sketch from six viewpoints, reads its 3D coordinates and your words, and answers a part list that becomes a low-poly model in a few seconds. Then you keep editing by drawing on the model and talking ("굴뚝을 이만큼 더 높게").
 
-A time-boxed spike (2026-11-04, 23:30 → 03:00 KST) for the Meta Global AI Developer Hackathon, as the "and it works in 3D too" coda of [This & That](../this-and-that/). All code is new.
+The second mode of [This & That](../README.md), switched in the top bar (or `http://localhost:8787/#3d`). It started as a time-boxed spike (2026-11-04, 23:30 → 03:00 KST, its commits are in this repo's history) and was then merged into the app: the same React + shadcn shell, hold-to-talk button, captions and theme, and the same server, under `/api/3d/*`. The control labels below are the spike's Korean ones; in the app they are Front / Side / Top / 3/4, Facing me / Ground, Undo, Rebuild, Paint with Muse Image and Make.
 
 ## How it works
 
@@ -30,19 +30,11 @@ Quality is similar; 1.3 at low effort was the most consistent about leg counts. 
 
 ## Run
 
-```sh
-npm install
-cp ../this-and-that/.env .env      # MODEL_API_KEY=...
-npm start                          # builds, then serves the app and the API on :5185
-```
+It runs with the app: `npm start` in the repo root serves both modes on http://localhost:8787 (see the main README; the tablet needs `adb reverse tcp:8787 tcp:8787`).
 
-Open http://localhost:5185. **Tablet:** `adb reverse tcp:5185 tcp:5185`, then open `http://localhost:5185` in Chrome on the tablet (localhost, so the microphone works without HTTPS).
+Without a pen or mic: draw with the mouse, type the sentence in the box and press Enter. In the browser console (3D mode open), `demoChair()` / `demoHouse()` add scripted front + side sketches, `replayChair()` draws the chair with pen events and builds it, and `quickShapeDemo()` draws five wobbly shapes twice (lifted at once, then held still).
 
-For development instead: `npm run server` (API on :8795) and `npm run dev` (Vite on :5185 with hot reload, proxies `/api`). Both use :5185, so run one or the other.
-
-Without a pen or mic: draw with the mouse, type the sentence in the box and press Enter. In the console, `demoChair()` / `demoHouse()` add scripted front + side sketches, `replayChair()` draws the chair with pen events and builds it, and `quickShapeDemo()` draws five wobbly shapes twice (lifted at once, then held still).
-
-`node --env-file=.env server/bench.ts out/jobs/<id> minimal` replays a saved request (`COPIES=1` for a single call). Every request and answer is saved under `out/jobs/`.
+`node --env-file=.env scripts/bench-3d.ts out/3d/jobs/<id> minimal` replays a saved request (`COPIES=1` for a single call). Every request and answer is saved under `out/3d/jobs/`.
 
 ## Using it
 
@@ -67,14 +59,16 @@ Without a pen or mic: draw with the mouse, type the sentence in the box and pres
 
 ## Layout
 
-- `client/src/scene.ts`: renderer, camera, orbit controls, grid, lights, view presets
-- `client/src/sketch.ts`: drawing planes, stroke capture, 3D polylines
-- `client/src/views.ts`: the six labeled renders for Spark
-- `client/src/build.ts`: parts → low-poly meshes, grow / morph / shrink animations
-- `client/src/quickshape.ts`: stroke → line / circle / ellipse / arc / arrow fitting
-- `client/src/fit.ts`: rotation sign check against the strokes
-- `client/src/paint.ts`: model render, mask, projective painting
-- `client/src/voice.ts`: hold-to-talk, PCM streaming, WAV fallback
-- `server/meta.ts`: Spark (hedged streaming JSON), Muse Image edit, Voice Transcribe (realtime + batch)
-- `server/perceive.ts`: the prompt, the schema, incremental part parsing
-- `server/index.ts`: HTTP API (NDJSON stream for perception) and static files
+- `client/src/three/scene.ts`: renderer, camera, orbit controls, grid, lights, view presets
+- `client/src/three/sketch.ts`: drawing planes, stroke capture, 3D polylines
+- `client/src/three/views.ts`: the six labeled renders for Spark
+- `client/src/three/build.ts`: parts → low-poly meshes, grow / morph / shrink animations
+- `client/src/three/quickshape.ts`: stroke → line / circle / ellipse / arc / arrow fitting in the drawing plane
+- `client/src/three/fit.ts`: rotation sign check against the strokes
+- `client/src/three/paint.ts`: model render, mask, projective painting
+- `client/src/three/voice.ts`: hold-to-talk, PCM streaming, WAV fallback
+- `client/src/three/engine.ts`: the mode's engine (state for React, talk, perceive → build, undo, paint, test sketches)
+- `client/src/components/three-mode.tsx`: the React view with its shadcn controls
+- `server/meta.ts` (shared): hedged streaming Spark, Muse Image edit, Voice Transcribe; `server/asr.ts` (shared): realtime transcription
+- `server/3d/perceive.ts`: the prompt, the schema, incremental part parsing
+- `server/3d/routes.ts`: `/api/3d/asr`, `/api/3d/perceive` (NDJSON stream), `/api/3d/paint`
