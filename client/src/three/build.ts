@@ -21,6 +21,8 @@ export type Part = {
   path?: number[][]; // tube: control points from its base (the center)
   radii?: number[]; // tube: [base, tip] radius
   outline?: number[][]; // membrane: [x, y] outline from its root (the center); lathe: [radius, y] half profile from its base
+  roughness?: number; // set when the part takes its look from an opened model (else from `material`)
+  metalness?: number;
 };
 
 const FINISH: Record<string, { roughness: number; metalness: number }> = {
@@ -69,7 +71,7 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
     case 'lathe': {
       // The half profile turned about the part's vertical axis.
       const profile = (p.outline ?? []).filter((q) => q.length === 2).map(([r, y]) => new THREE.Vector2(Math.max(0, r), y));
-      if (profile.length >= 2) return new THREE.LatheGeometry(profile, 32);
+      if (profile.length >= 2) return new THREE.LatheGeometry(profile, 14);
       return new THREE.SphereGeometry(0.5, 12, 8).scale(sx, sy, sz);
     }
     case 'membrane': {
@@ -91,7 +93,7 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
 // narrowing from the base radius to the tip.
 function taperedTube(path: number[][], base: number, tip: number) {
   const curve = new THREE.CatmullRomCurve3(path.map((q) => new THREE.Vector3(...q)), false, 'centripetal');
-  const n = 40, radial = 12;
+  const n = 16, radial = 7; // low poly: a few facets around, a few steps along
   const g = new THREE.TubeGeometry(curve, n, 1, radial, false);
   const at = g.getAttribute('position');
   const v = new THREE.Vector3();
@@ -182,7 +184,7 @@ export class Builder {
         this.built.delete(part.name);
         return;
       }
-      const f = FINISH[part.material] ?? FINISH.paint;
+      const f = { ...(FINISH[part.material] ?? FINISH.paint), ...(part.roughness !== undefined ? { roughness: part.roughness } : {}), ...(part.metalness !== undefined ? { metalness: part.metalness } : {}) };
       const mat = new THREE.MeshStandardMaterial({ color: part.color, flatShading: true, transparent: true, opacity: 0, ...f });
       const mesh = new THREE.Mesh(geometryOf(part, byId), mat);
       mesh.castShadow = mesh.receiveShadow = true;

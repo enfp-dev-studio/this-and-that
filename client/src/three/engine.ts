@@ -214,33 +214,47 @@ class Engine3D {
     }
   }
 
-  // A new horn or wing rooted on the opened model's surface: a ray from just
-  // outside its root toward the model's middle, the root moved to the hit.
-  private onSurface(parts: Part[], before: Part[]): Part[] {
+  // New parts on an opened model: a horn or wing rooted on its surface (a ray
+  // from just outside its root toward the model's middle, the root moved to
+  // the hit), and each part in the model's own look there: the color under the
+  // hit (vertex color, texel or material color) a little lighter or darker for
+  // an accent, and its roughness and metalness. Spark's color stays when the
+  // words ask for one (or for flames).
+  private onSurface(parts: Part[], before: Part[], transcript = ''): Part[] {
     const model = this.imported;
     if (!model) return parts;
     const meshes: THREE.Object3D[] = [];
     model.traverse((o) => (o as THREE.Mesh).isMesh && meshes.push(o));
-    const mid = new THREE.Box3().setFromObject(model).getCenter(new THREE.Vector3());
+    const box = new THREE.Box3().setFromObject(model);
+    const mid = box.getCenter(new THREE.Vector3());
     const old = new Set(before.map((p) => p.name));
     const ray = new THREE.Raycaster();
+    const r3 = (v: number) => Math.round(v * 1000) / 1000;
+    const named = /\b(red|orange|yellow|green|blue|purple|pink|black|white|gold|golden|silver|bronze|flames?|fire|glow\w*)\b/i.test(transcript);
     return parts.map((p) => {
-      if (old.has(p.name) || (p.primitive !== 'tube' && p.primitive !== 'membrane')) return p;
+      if (old.has(p.name) || p.primitive === 'mesh') return p;
       const root = new THREE.Vector3().fromArray(p.center);
-      // A tube that already runs through the model (a guard across a blade) stays as drawn.
-      const box = new THREE.Box3().setFromObject(model);
-      if (p.primitive === 'tube' && p.path?.some((q) => box.containsPoint(root.clone().add(new THREE.Vector3().fromArray(q))))) return p;
       const dir = mid.clone().sub(root).normalize();
       ray.set(root.clone().addScaledVector(dir, -0.3), dir);
       const hit = ray.intersectObjects(meshes, false)[0];
       if (!hit) return p;
-      const inset = p.primitive === 'tube' ? Math.abs(p.radii?.[0] ?? 0.02) * 0.6 : 0.005;
-      const to = hit.point.clone().addScaledVector(dir, inset);
-      const shift = root.clone().sub(to);
-      const r3 = (v: number) => Math.round(v * 1000) / 1000;
-      // A tube keeps its drawn curve (only its base moves); a membrane moves whole.
-      const path = p.primitive === 'tube' && p.path ? p.path.map((q, i) => (i === 0 ? q : q.map((v, a) => r3(v + shift.getComponent(a))))) : p.path;
-      return { ...p, center: to.toArray().map(r3), ...(path ? { path } : {}) };
+      let q = p;
+      // A tube that already runs through the model (a guard across a blade) stays as drawn.
+      const through = p.primitive === 'tube' && p.path?.some((v) => box.containsPoint(root.clone().add(new THREE.Vector3().fromArray(v))));
+      if ((p.primitive === 'tube' || p.primitive === 'membrane') && !through) {
+        const inset = p.primitive === 'tube' ? Math.abs(p.radii?.[0] ?? 0.02) * 0.6 : 0.005;
+        const to = hit.point.clone().addScaledVector(dir, inset);
+        const shift = root.clone().sub(to);
+        // A tube keeps its drawn curve (only its base moves); a membrane moves whole.
+        const path = p.primitive === 'tube' && p.path ? p.path.map((v, i) => (i === 0 ? v : v.map((x, a) => r3(x + shift.getComponent(a))))) : p.path;
+        q = { ...p, center: to.toArray().map(r3), ...(path ? { path } : {}) };
+      }
+      const look = surfaceLook(hit);
+      if (!look) return q;
+      const accent = look.color.clone();
+      const hsl = accent.getHSL({ h: 0, s: 0, l: 0 });
+      accent.setHSL(hsl.h, Math.min(1, hsl.s * 1.15), hsl.l > 0.55 ? hsl.l - 0.14 : hsl.l + 0.14);
+      return { ...q, ...(named ? {} : { color: `#${accent.getHexString()}` }), roughness: look.roughness, metalness: look.metalness };
     });
   }
 
@@ -529,14 +543,14 @@ class Engine3D {
         if (ev.type === 'say') said = ev.say;
         if (ev.type === 'part') {
           got.push(ev.part as Part);
-          builder.apply(this.onSurface(got, current), sketch.strokes, true);
+          builder.apply(this.onSurface(got, current, transcript), sketch.strokes, true);
           this.status(`Building · ${got.length} ${got.length === 1 ? 'part' : 'parts'}`, true);
         }
       });
       const a = r.answer;
       this.subject = a.subject;
       this.builds.push({ parts: before, transcript });
-      a.parts = this.onSurface(a.parts as Part[], current);
+      a.parts = this.onSurface(a.parts as Part[], current, transcript);
       builder.apply(a.parts as Part[], sketch.strokes);
       if (this.snapshot.wireframe) this.set({ wireframe: false });
       sketch.settle();
@@ -667,6 +681,38 @@ class Engine3D {
     for (const pts of row(bottom)) await penStroke(stage, pts, 450, 7, { wobble: 3.5, holdMs: 550 });
     return this.sketch.strokes.map((s) => s.shape ?? 'as drawn');
   }
+}
+
+// The look of a model's surface at a ray hit: its color (vertex color, else the
+// base-color texel, times the material color) and its roughness and metalness.
+const texels = new Map<string, { data: Uint8ClampedArray; w: number; h: number }>();
+function surfaceLook(hit: THREE.Intersection) {
+  const mesh = hit.object as THREE.Mesh;
+  const mat = (Array.isArray(mesh.material) ? mesh.material[hit.face?.materialIndex ?? 0] : mesh.material) as THREE.MeshStandardMaterial;
+  if (!mat) return null;
+  const color = mat.color ? mat.color.clone().convertLinearToSRGB() : new THREE.Color('#808080');
+  const vc = mesh.geometry.getAttribute('color');
+  if (vc && hit.face) {
+    const c = [hit.face.a, hit.face.b, hit.face.c].map((i) => new THREE.Color(vc.getX(i), vc.getY(i), vc.getZ(i)));
+    color.multiply(new THREE.Color((c[0].r + c[1].r + c[2].r) / 3, (c[0].g + c[1].g + c[2].g) / 3, (c[0].b + c[1].b + c[2].b) / 3).convertLinearToSRGB());
+  } else if (mat.map?.image && hit.uv) {
+    const img = mat.map.image as CanvasImageSource & { width: number; height: number };
+    let t = texels.get(mat.map.uuid);
+    if (!t) {
+      const c = document.createElement('canvas');
+      [c.width, c.height] = [img.width, img.height];
+      const g = c.getContext('2d', { willReadFrequently: true })!;
+      g.drawImage(img, 0, 0);
+      t = { data: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+      texels.set(mat.map.uuid, t);
+    }
+    const x = Math.min(t.w - 1, Math.max(0, Math.floor((((hit.uv.x % 1) + 1) % 1) * t.w)));
+    const yv = (((hit.uv.y % 1) + 1) % 1) * t.h;
+    const y = Math.min(t.h - 1, Math.max(0, Math.floor(mat.map.flipY ? t.h - yv : yv)));
+    const i = (y * t.w + x) * 4;
+    color.multiply(new THREE.Color(t.data[i] / 255, t.data[i + 1] / 255, t.data[i + 2] / 255));
+  }
+  return { color, roughness: mat.roughness ?? 0.6, metalness: mat.metalness ?? 0 };
 }
 
 // n points evenly spaced along a polyline (by length).

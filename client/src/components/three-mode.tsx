@@ -20,10 +20,11 @@ import { Separator } from '@/components/ui/separator';
 // Sample models to edit (samples/3d, CC0): Poly Haven's Antique Estoc and the
 // Khronos glTF Sample Assets' SciFiHelmet (textures at 1024 px).
 const SAMPLE_MODELS = [
+  { url: '/3d/LowPolySword/sword.glb', name: 'low-poly sword', height: 0.9, label: 'Sample model: a low-poly sword' },
   { url: '/3d/AntiqueEstoc/antique_estoc_1k.gltf', name: 'sword', height: 0.9, label: 'Sample model: a sword' },
   { url: '/3d/SciFiHelmet/SciFiHelmet.gltf', name: 'sci-fi helmet', height: 0.5, label: 'Sample model: a sci-fi helmet' },
 ];
-const CREDITS = 'Sample models, CC0: “Antique Estoc” by Ulan Cabanilla (modeling) and James Ray Cock (texturing), Poly Haven; “SciFiHelmet” by Michael Pavlovic (converted to glTF by Norbert Nopper), Khronos glTF Sample Assets.';
+const CREDITS = 'Sample models, CC0: “Sword” by Quaternius (Poly Pizza); “Antique Estoc” by Ulan Cabanilla (modeling) and James Ray Cock (texturing), Poly Haven; “SciFiHelmet” by Michael Pavlovic (converted to glTF by Norbert Nopper), Khronos glTF Sample Assets.';
 
 const VIEWS: { value: ViewName; label: string }[] = [
   { value: 'front', label: 'Front' },

@@ -149,7 +149,9 @@ MIT, see [LICENSE](LICENSE).
 
 ### Third-party sample models
 
-3D mode's **Open → Sample model: a sword** loads `samples/3d/AntiqueEstoc/`, [Antique Estoc](https://polyhaven.com/a/antique_estoc) from Poly Haven, [CC0](https://polyhaven.com/license): modeling by Ulan Cabanilla, texturing by James Ray Cock (glTF with 1k textures; see `CREDITS.md` beside it).
+3D mode's **Open → Sample model: a low-poly sword** loads `samples/3d/LowPolySword/`, "Sword" by [Quaternius](https://quaternius.com) from [Poly Pizza](https://poly.pizza/m/9lLmH8Et4K), CC0 1.0 (see `CREDITS.md` beside it).
+
+**Open → Sample model: a sword** loads `samples/3d/AntiqueEstoc/`, [Antique Estoc](https://polyhaven.com/a/antique_estoc) from Poly Haven, [CC0](https://polyhaven.com/license): modeling by Ulan Cabanilla, texturing by James Ray Cock (glTF with 1k textures; see `CREDITS.md` beside it).
 
 **Open → Sample model: a sci-fi helmet** loads `samples/3d/SciFiHelmet/`, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
 
