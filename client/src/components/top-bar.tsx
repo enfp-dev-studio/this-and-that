@@ -78,6 +78,31 @@ export function ModeSwitch({ mode, onMode, disabled }: { mode: AppMode; onMode: 
   );
 }
 
+// The inspector, the same in both modes: a sheet from the right, collapsed by default.
+export function Inspector({ tip, description, children }: { tip: string; description: string; children: React.ReactNode }) {
+  return (
+    <Sheet>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon-touch" className="rounded-full" aria-label="Details">
+              <PanelRight />
+            </Button>
+          </SheetTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{tip}</TooltipContent>
+      </Tooltip>
+      <SheetContent>
+        <SheetHeader>
+          <SheetTitle>Details</SheetTitle>
+          <SheetDescription>{description}</SheetDescription>
+        </SheetHeader>
+        {children}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 // Image mode's chrome: undo/redo, the pen modes, Open / Export and the
 // inspector (history, references, what was understood), collapsed by default.
 export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
@@ -101,7 +126,7 @@ export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
         <>
           <ModeSwitch mode="image" onMode={onMode} disabled={busy} />
           <Separator orientation="vertical" />
-          <PenModes value={s.penMode} />
+          <PenModes value={s.penMode} onChange={(mode) => editor.setPenMode(mode)} />
         </>
       }
       right={
@@ -114,29 +139,18 @@ export function ImageChrome({ onMode }: { onMode: (mode: AppMode) => void }) {
             </Toggle>
           )}
           <OpenMenu disabled={busy} />
-          <Button variant="ghost" size="touch" className="rounded-full" onClick={() => editor.exportCurrent()} disabled={!s.versions.length}>
-            <Download />
-            Export
-          </Button>
-          <Sheet>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <SheetTrigger asChild>
-                  <Button variant="ghost" size="icon-touch" className="rounded-full" aria-label="Details">
-                    <PanelRight />
-                  </Button>
-                </SheetTrigger>
-              </TooltipTrigger>
-              <TooltipContent>History, references and details</TooltipContent>
-            </Tooltip>
-            <SheetContent>
-              <SheetHeader>
-                <SheetTitle>Details</SheetTitle>
-                <SheetDescription>History, references and what was understood.</SheetDescription>
-              </SheetHeader>
-              <SidePanel />
-            </SheetContent>
-          </Sheet>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="touch" className="rounded-full" onClick={() => editor.exportCurrent()} disabled={!s.versions.length}>
+                <Download />
+                Export
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Save the current picture</TooltipContent>
+          </Tooltip>
+          <Inspector tip="History, references and details" description="History, references and what was understood.">
+            <SidePanel />
+          </Inspector>
         </>
       }
     />

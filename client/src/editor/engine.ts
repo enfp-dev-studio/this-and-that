@@ -901,6 +901,36 @@ class Editor {
     }
   }
 
+  // The keyboard fallback: the marks drawn so far, with the request typed
+  // instead of said (any recording is dropped).
+  async sendTyped(text: string) {
+    text = text.trim();
+    const { mode } = this.snapshot;
+    if (!text || !this.target.image || mode === 'processing' || mode === 'review') return;
+    if (!this.strokes.some((s) => !s.on)) return this.onNotice('Draw a mark on the picture first, then type what to change there.');
+    if (mode === 'recording') {
+      this.recorder?.stop();
+      this.recorder = null;
+      this.live?.stop();
+      this.live = null;
+    }
+    this.forgetSnap();
+    this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'active' }, elapsedMs: 0, caption: text });
+    this.updateSamStep();
+    this.animate();
+    try {
+      const refId = (id?: string) => this.snapshot.refs.find((r) => r.id === id)?.imageId;
+      await this.sendJob({
+        imageId: await this.current()!.imageId,
+        strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on, pen }) => ({ mark, points, markId, pen, on: on ? await refId(on) : undefined }))),
+        pinned: await Promise.all(this.snapshot.refs.filter((r) => r.pinned).map((r) => r.imageId)),
+        text,
+      });
+    } catch (err) {
+      this.fail((err as Error).message);
+    }
+  }
+
   private async sendJob(body: Record<string, unknown>, once: Record<string, unknown> = {}) {
     this.lastSend = { body };
     const { id } = await postJson('/api/jobs', { ...body, ...once });

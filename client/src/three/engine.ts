@@ -11,6 +11,8 @@ import { renderViews, strokeColor, type View } from './views';
 import { Voice } from './voice';
 import { applyPaint, renderModel } from './paint';
 import { penStroke, screenOf } from './replay';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { watchTheme } from '../editor/colors';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
 export type Snapshot3D = {
@@ -22,16 +24,21 @@ export type Snapshot3D = {
   thinking: boolean;
   result: { say: string; parts: { name: string; color: string }[]; ms: number } | null;
   plane: 'view' | 'ground';
+  pen: 'auto' | 'point' | 'shape'; // Point: marks an existing part; Shape: draws geometry; auto: Spark decides
   sketchVisible: boolean;
+  gridVisible: boolean;
+  wireframe: boolean;
   hasModel: boolean;
+  hasStrokes: boolean;
   canUndo: boolean;
+  canRedo: boolean;
 };
 
-const IDLE = 'Draw with the pen, hold the mic and say what it is · fingers or right mouse rotate';
+const IDLE = 'Draw with the pen, hold the mic and say what it is';
 const SHAPES = { line: 'a line', circle: 'a circle', ellipse: 'an ellipse', arc: 'an arc', arrow: 'an arrow' };
 
 class Engine3D {
-  private snapshot: Snapshot3D = { status: IDLE, working: false, recording: false, caption: '', views: [], thinking: false, result: null, plane: 'view', sketchVisible: true, hasModel: false, canUndo: false };
+  private snapshot: Snapshot3D = { status: IDLE, working: false, recording: false, caption: '', views: [], thinking: false, result: null, plane: 'view', pen: 'auto', sketchVisible: true, gridVisible: true, wireframe: false, hasModel: false, hasStrokes: false, canUndo: false, canRedo: false };
   private listeners = new Set<() => void>();
   private stage: Stage | null = null;
   private sketch!: Sketch;
@@ -41,6 +48,8 @@ class Engine3D {
   private pressedAt = 0;
   private toggled = false;
   private builds: { parts: Part[]; transcript: string }[] = [];
+  // What Undo took away, for Redo: a stroke, or a build (its parts and result).
+  private redos: ({ kind: 'stroke'; stroke: Stroke } | { kind: 'build'; parts: Part[]; transcript: string; result: Snapshot3D['result'] })[] = [];
   private subject = '';
 
   subscribe = (l: () => void) => {
@@ -56,7 +65,7 @@ class Engine3D {
     this.set({ status, working });
   }
   private sync() {
-    this.set({ hasModel: this.builder.parts.length > 0, canUndo: this.sketch.strokes.length > 0 || this.builds.length > 0 });
+    this.set({ hasModel: this.builder.parts.length > 0, hasStrokes: this.sketch.strokes.length > 0, canUndo: this.sketch.strokes.length > 0 || this.builds.length > 0, canRedo: this.redos.length > 0 });
   }
 
   // The scene is made once and moved into the view each time 3D mode mounts.
@@ -67,6 +76,8 @@ class Engine3D {
       this.sketch = new Sketch(stage);
       this.builder = new Builder(stage);
       this.sketch.onChange = () => this.sync();
+      this.sketch.onStroke = () => (this.redos = []); // a new stroke ends the redo history
+      watchTheme(() => (stage.applyTheme(), this.sketch.applyTheme()));
       this.sketch.onSnap = (kind) => this.status(`QuickShape: snapped to ${SHAPES[kind]} · Undo brings back the stroke as drawn`);
       // After a build the model turns slowly until the user touches the scene.
       stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
@@ -114,6 +125,39 @@ class Engine3D {
     this.set({ plane });
   }
 
+  setPen(pen: Snapshot3D['pen']) {
+    this.sketch.pen = pen;
+    this.set({ pen });
+  }
+
+  toggleGrid() {
+    const gridVisible = !this.snapshot.gridVisible;
+    const floor = this.stage?.helpers.getObjectByName('floor');
+    if (floor) floor.visible = gridVisible;
+    this.set({ gridVisible });
+  }
+
+  toggleWireframe() {
+    const wireframe = !this.snapshot.wireframe;
+    this.stage?.model.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if ((o as THREE.Mesh).isMesh && m && 'wireframe' in m) m.wireframe = wireframe;
+    });
+    this.set({ wireframe });
+  }
+
+  // The model as a binary glTF (.glb) download.
+  async exportGlb() {
+    if (!this.stage || !this.builder.parts.length) return;
+    this.builder.finish();
+    const glb = (await new GLTFExporter().parseAsync(this.stage.model, { binary: true })) as ArrayBuffer;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
+    a.download = `${(this.subject || 'model').replace(/\W+/g, '-')}.glb`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+  }
+
   toggleSketch() {
     const sketchVisible = !this.snapshot.sketchVisible;
     this.sketch.setVisible(sketchVisible);
@@ -124,6 +168,7 @@ class Engine3D {
     this.sketch.clear();
     this.builder.clear();
     this.builds.length = 0;
+    this.redos = [];
     this.sketch.round = 1;
     this.set({ result: null, views: [], caption: '' });
     this.status(IDLE);
@@ -177,9 +222,10 @@ class Engine3D {
 
   // ---------- undo: strokes of this round first, then whole builds ----------
 
-  private undoBuild() {
+  private undoBuild(forRedo = true) {
     const b = this.builds.pop();
     if (!b) return null;
+    if (forRedo) this.redos.push({ kind: 'build', parts: this.builder.parts, transcript: b.transcript, result: this.snapshot.result });
     if (b.parts.length) this.builder.apply(b.parts, this.sketch.strokes);
     else this.builder.clear();
     this.sketch.unsettle();
@@ -191,15 +237,33 @@ class Engine3D {
 
   undo() {
     if (this.busy) return;
-    if (this.sketch.current().length) this.sketch.undo();
-    else this.undoBuild();
+    if (this.sketch.current().length) {
+      // A snapped stroke first goes back to how it was drawn (not redoable).
+      const last = this.sketch.strokes.at(-1)!;
+      const snapped = !!last.raw;
+      this.sketch.undo();
+      if (!snapped) this.redos.push({ kind: 'stroke', stroke: last });
+    } else this.undoBuild();
+    this.sync();
+  }
+
+  redo() {
+    const r = this.redos.pop();
+    if (!r || this.busy) return;
+    if (r.kind === 'stroke') this.sketch.restore(r.stroke);
+    else {
+      this.builds.push({ parts: this.builder.parts, transcript: r.transcript });
+      this.builder.apply(r.parts, this.sketch.strokes);
+      this.sketch.settle();
+      this.set({ result: r.result });
+    }
     this.sync();
   }
 
   // Same strokes and words, a fresh answer.
   reroll() {
     if (this.busy) return;
-    const b = this.undoBuild();
+    const b = this.undoBuild(false);
     if (b) this.perceive(b.transcript);
   }
 
@@ -233,7 +297,7 @@ class Engine3D {
     const box = new THREE.Box3().setFromPoints(s.points);
     const n = Math.min(8, s.points.length);
     const points = Array.from({ length: n }, (_, i) => s.points[Math.round((i * (s.points.length - 1)) / Math.max(1, n - 1))].toArray());
-    return { id: s.id, color: strokeColor(s.id), drawnFrom: s.viewDir.toArray(), plane: s.plane, bbox: { min: box.min.toArray(), max: box.max.toArray() }, points, closed: s.closed };
+    return { id: s.id, color: strokeColor(s.id), drawnFrom: s.viewDir.toArray(), plane: s.plane, bbox: { min: box.min.toArray(), max: box.max.toArray() }, points, closed: s.closed, ...(s.pen ? { pen: s.pen } : {}) };
   }
 
   async perceive(transcript: string) {
@@ -244,7 +308,7 @@ class Engine3D {
     if (!strokes.length && !(editing && transcript)) return this.status('Draw something first');
     this.busy = true;
     const before = builder.parts;
-    this.status('Muse Spark is looking at the sketch from six sides', true);
+    this.status('Looking at the sketch from six sides', true);
     builder.finish();
     const views: View[] = renderViews(stage, strokes, { withModel: editing });
     this.set({ views: views.map((v) => ({ name: v.name, image: v.image })), thinking: true });
@@ -278,7 +342,7 @@ class Engine3D {
           if (ev.type === 'part') {
             got.push(ev.part);
             builder.apply(got, sketch.strokes, true);
-            this.status(`Building · ${got.map((p) => p.name).join(', ')}`, true);
+            this.status(`Building · ${got.length} ${got.length === 1 ? 'part' : 'parts'}`, true);
           }
           if (ev.type === 'error') throw new Error(ev.error);
           if (ev.type === 'done') {
@@ -286,11 +350,13 @@ class Engine3D {
             this.subject = a.subject;
             this.builds.push({ parts: before, transcript });
             builder.apply(a.parts, sketch.strokes);
+            if (this.snapshot.wireframe) this.set({ wireframe: false });
             sketch.settle();
             stage.controls.autoRotateSpeed = 1.6;
             stage.controls.autoRotate = true;
             this.set({ result: { say: a.say || said || a.subject, parts: a.parts.map((p: Part) => ({ name: p.name, color: p.color })), ms: ev.ms } });
-            this.status(`${a.subject} · ${a.parts.length} parts · first part in ${(ev.firstMs / 1000).toFixed(1)} s · draw and talk to change it`);
+            this.redos = [];
+            this.status(`${a.subject} · ${a.parts.length} parts · ${(ev.ms / 1000).toFixed(1)} s`);
             (window as any).last = ev;
           }
         }

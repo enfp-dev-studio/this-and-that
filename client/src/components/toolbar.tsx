@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Eraser, Eye, Loader2, Mic, PenLine, PenTool, Pointer, Send, X } from 'lucide-react';
+import { Check, Eraser, Eye, Keyboard, Loader2, Mic, PenLine, PenTool, Pointer, Send, X } from 'lucide-react';
 import { editor, type PenMode } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
@@ -96,20 +96,24 @@ export function Toolbar({ hold }: { hold: Hold }) {
           </div>
         </>
       )}
+
+      {!typing && !review && (
+        <TypeToggle placeholder="Draw marks, then type what to change at them" sendLabel="Send" busy={working} onSend={(text) => editor.sendTyped(text)} />
+      )}
     </div>
   );
 }
 
-// What a mark means, in the top toolbar. Neither pressed is auto: the app
-// tells from what you say ("이렇게", "like this") whether a mark picks a thing
-// or draws its new shape.
-export function PenModes({ value }: { value: PenMode }) {
+// What a mark means, in the top toolbar of both modes. Neither pressed is
+// auto: the app tells from what you say ("이렇게", "like this") whether a mark
+// picks a thing or draws its new shape.
+export function PenModes({ value, onChange }: { value: PenMode; onChange: (mode: PenMode) => void }) {
   const modes = [
     { value: 'point', label: 'Point', icon: Pointer, tip: 'Point: marks pick what to change' },
     { value: 'shape', label: 'Shape', icon: PenTool, tip: 'Shape: marks draw the new outline to follow' },
   ] as const;
   return (
-    <ToggleGroup type="single" variant="segment" size="icon-touch" value={value === 'auto' ? '' : value} onValueChange={(v) => editor.setPenMode((v || 'auto') as PenMode)} aria-label="Pen mode (none pressed: auto)">
+    <ToggleGroup type="single" variant="segment" size="icon-touch" value={value === 'auto' ? '' : value} onValueChange={(v) => onChange((v || 'auto') as PenMode)} aria-label="Pen mode (none pressed: auto)">
       {modes.map((m) => (
         <Tooltip key={m.value}>
           <TooltipTrigger asChild>
@@ -121,6 +125,57 @@ export function PenModes({ value }: { value: PenMode }) {
         </Tooltip>
       ))}
     </ToggleGroup>
+  );
+}
+
+// Typing instead of talking, for both modes: a keyboard button that opens a
+// text field (collapsed by default; the core loop is drawing and talking).
+export function TypeToggle({ placeholder, sendLabel, busy, onSend }: { placeholder: string; sendLabel: string; busy: boolean; onSend: (text: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const send = () => {
+    if (!text.trim()) return;
+    onSend(text.trim());
+    setText('');
+  };
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Toggle size="icon-touch" className="rounded-full" pressed={open} onPressedChange={setOpen} aria-label="Type instead">
+            <Keyboard />
+          </Toggle>
+        </TooltipTrigger>
+        <TooltipContent>Type instead of talking</TooltipContent>
+      </Tooltip>
+      {open && (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <Textarea
+            autoFocus
+            className="w-(--type-width)"
+            placeholder={placeholder}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          <Button type="submit" size="touch" className="rounded-full" disabled={busy || !text.trim()}>
+            <Send />
+            {sendLabel}
+          </Button>
+        </form>
+      )}
+    </>
   );
 }
 
