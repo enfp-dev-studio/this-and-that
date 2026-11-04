@@ -8,7 +8,7 @@
 // encoded with ffmpeg at 30 fps. Waits are kept in full (sped up in editing).
 //
 //   node --env-file=.env scripts/capture-demo.ts [scene …]
-//   scenes: hook macaron three hold chair (default), also brooch cuff; hold follows three
+//   scenes: hook macaron three hold move chair (default), also brooch cuff; hold follows three
 //   Each take also writes out/demo/<scene>.timing.json (when its voice starts, the
 //   request goes out and the result comes back, and what is said when) for edit-demo.ts.
 //   HEADED=1 shows the browser window.
@@ -32,7 +32,7 @@ const log = (...a: unknown[]) => console.log(`[${new Date().toTimeString().slice
 
 // ---------- the scenes ----------
 
-type Mark = { say: string; object?: string; box?: number[]; shape: 'circle' | 'tap' | 'contour'; on?: 'ref' };
+type Mark = { say: string; object?: string; box?: number[]; shape: 'circle' | 'tap' | 'contour' | 'arrow'; to?: [number, number]; on?: 'ref' };
 type Scene = { image: string; ref?: string; marks: Mark[] };
 const sample = (p: string) => join(root, 'samples', p);
 
@@ -68,6 +68,14 @@ const SCENES: Record<string, Scene> = {
       { say: 'and add a little star here.', box: [170, 100, 290, 220], shape: 'circle' },
     ],
   },
+  // A destination: something a selection can't say.
+  move: {
+    image: sample('desk.png'),
+    marks: [
+      { say: 'Move this cactus', box: [1450, 625, 1675, 950], shape: 'circle' },
+      { say: 'over here.', box: [1450, 625, 1675, 950], shape: 'arrow', to: [1290, 1000] },
+    ],
+  },
 };
 
 type Spoken = { at: number; dur: number; say: string }; // seconds into the voice track
@@ -76,7 +84,7 @@ type Clip = { strokes: (Stroke & { on?: 'ref' })[]; speech: Spoken[] };
 // The voice, one phrase after another (a short pause between), and each
 // mark drawn while its phrase is said (like clipkit.buildClip, with VOICE).
 // Writes clips/<name>.wav (44.1 kHz mono): the app's microphone and the edit's sound.
-async function voiceClip(name: string, image: Buffer, marks: { say: string; box: number[] }[]) {
+async function voiceClip(name: string, image: Buffer, marks: { say: string; box: number[]; shape?: Mark['shape']; to?: [number, number] }[]) {
   const { width: W, height: H } = await (await import('sharp')).default(image).metadata();
   const parts: { file: string; at: number }[] = [];
   const strokes: Stroke[] = [];
@@ -88,7 +96,7 @@ async function voiceClip(name: string, image: Buffer, marks: { say: string; box:
     const d = await audioDurationMs(aiff);
     parts.push({ file: aiff, at });
     speech.push({ at: at / 1000, dur: d / 1000, say: m.say });
-    strokes.push({ mark: i + 1, points: strokePoints(m.box, 'circle', at + 100, at + Math.max(1300, d), W!, H!) });
+    strokes.push({ mark: i + 1, points: strokePoints(m.box, m.shape === 'arrow' ? 'arrow' : 'circle', at + 100, at + Math.max(1300, d), W!, H!, m.to) });
     at += Math.max(d, 1300) + 350;
   }
   const inputs = parts.flatMap((p) => ['-i', p.file]);
@@ -107,7 +115,7 @@ async function prepare(name: string, scene: Scene): Promise<Clip> {
     if (img && names.length) for (const [k, v] of await locate(readFileSync(img), names)) boxes.set(k, v);
   }
   const box = (m: Mark) => m.box ?? boxes.get(m.object!)!;
-  const { strokes, speech } = await voiceClip(name, readFileSync(scene.image), scene.marks.map((m) => ({ say: m.say, box: box(m) })));
+  const { strokes, speech } = await voiceClip(name, readFileSync(scene.image), scene.marks.map((m) => ({ say: m.say, box: box(m), shape: m.shape, to: m.to })));
   const shaped = strokes.map((s, i) => {
     const m = scene.marks[i];
     const [x0, y0, x1, y1] = box(m);
@@ -329,7 +337,7 @@ async function sceneHold(page: Page, rec: Recorder) {
 
 // ---------- 3D: the chair from the front and the side, then a turn around it ----------
 
-async function sceneChair(page: Page, rec: Recorder) {
+async function sceneChair(page: Page, cdp: CDPSession, rec: Recorder) {
   // 3D through the mode switch (on camera), from a fresh page.
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.locator('[role=radio][aria-label="3D"]').click();
@@ -351,15 +359,83 @@ async function sceneChair(page: Page, rec: Recorder) {
   const parts = await page.evaluate(() => (window as any).builder?.parts?.length ?? 0);
   log(`chair: ${ok ? `${parts} parts` : 'timeout'} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
   const builtAt = Date.now() / 1000;
-  await sleep(9000); // the model turns slowly after it is built
+  await sleep(2500); // the model turns slowly after it is built
+  // Then an edit drawn on the model and said, through the mic like a user:
+  // hold Space (hold to talk), a line along each side of the seat while saying
+  // "Add armrests here.", let go to send. (A tap on the talk button can read
+  // as a hold when the page is busy recording, so it stops at once.)
+  const edit = 'Add armrests here.';
+  const editWav = join(clipDir, 'chair-edit.aiff');
+  execFileSync('say', ['-v', VOICE, '-o', editWav, edit]);
+  const editDur = (await audioDurationMs(editWav)) / 1000;
+  await page.evaluate(() => {
+    const w = window as any;
+    w.stage.controls.autoRotate = false;
+    w.stage.goTo('three');
+    w.__before = w.builder.parts;
+  });
+  await sleep(900);
+  const sides = await page.evaluate(() => {
+    const { THREE, stage } = window as any;
+    const r = stage.renderer.domElement.getBoundingClientRect();
+    const at = (x: number, y: number, z: number) => {
+      const v = new THREE.Vector3(x, y, z).project(stage.camera);
+      return [r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height];
+    };
+    // From the front of the seat to the back, on its top, at each side.
+    return [-0.21, 0.21].map((x) => Array.from({ length: 24 }, (_, i) => at(x, 0.47, 0.17 - (0.34 * i) / 23)));
+  });
+  await page.keyboard.down('Space');
+  await sleep(900); // the transcription socket opens
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', editWav, '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'chair-edit.wav')]);
+  const ffwav = readFileSync(join(clipDir, 'chair-edit.wav')).toString('base64');
+  const editVoiceAt = Date.now() / 1000;
+  const editMs = await page.evaluate(([b64]) => (window as any).__play(b64, 0), [ffwav] as const);
+  const pen = (type: string, [x, y]: number[], buttons: number) => cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons, clickCount: 1, pointerType: 'pen' } as any);
+  for (const [k, pts] of sides.entries()) {
+    await sleep(k ? 150 : 250);
+    await pen('mousePressed', pts[0], 1);
+    for (const q of pts.slice(1)) {
+      await sleep(26);
+      await pen('mouseMoved', q, 1);
+    }
+    await pen('mouseReleased', pts.at(-1)!, 0);
+  }
+  await sleep(editMs + 500 - (Date.now() - editVoiceAt * 1000));
+  await page.keyboard.up('Space');
+  const editRelease = Date.now() / 1000;
+  const edited = await page.waitForFunction(() => (window as any).builder.parts !== (window as any).__before && (window as any).stage.controls.autoRotate, undefined, { timeout: 90_000 }).then(() => true, () => false);
+  const editedAt = Date.now() / 1000;
+  const after = await page.evaluate(() => (window as any).builder.parts.map((p: any) => p.name).join(', '));
+  log(`chair: edit ${edited} ${(editedAt - editRelease).toFixed(1)} s: ${after}`);
+  await sleep(3000); // and it turns
+  // Then "Paint" (Muse Image paints it from this view), and it turns again.
+  const paintBtn = page.locator('button:has-text("Paint")');
+  const pb = (await paintBtn.boundingBox())!;
+  await page.mouse.move(pb.x + pb.width / 2, pb.y + pb.height / 2, { steps: 12 });
+  await sleep(300);
+  const paintAt = Date.now() / 1000;
+  await page.mouse.down();
+  await sleep(80);
+  await page.mouse.up();
+  await page.waitForSelector('text=Muse Image is painting', { timeout: 10_000 }).catch(() => {});
+  const painted = await page.waitForSelector('text=Muse Image is painting', { state: 'detached', timeout: 120_000 }).then(() => true, () => false);
+  const paintedAt = Date.now() / 1000;
+  log(`chair: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
+  await page.evaluate(() => Object.assign((window as any).stage.controls, { autoRotate: true, autoRotateSpeed: 1.6 }));
+  await sleep(5500);
   const zero = await rec.stop('chair');
-  writeFileSync(join(out, 'chair.timing.json'), JSON.stringify({ voice: join(clipDir, 'chair.wav'), voiceAt: voiceAt - zero, release: 11 - 0, result: builtAt - zero, speech }, null, 1));
+  // The take's sound for the edit: the chair lines, then the edit line where it was said.
+  const editAt = editVoiceAt - voiceAt;
+  speech.push({ at: editAt, dur: editDur, say: edit });
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(clipDir, 'chair.wav'), '-i', editWav, '-filter_complex', `[1:a]aresample=44100,adelay=${Math.round(editAt * 1000)}|${Math.round(editAt * 1000)}[e];[0:a][e]amix=inputs=2:normalize=0:duration=longest[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'chair-take.wav')]);
+  writeFileSync(join(out, 'chair.timing.json'), JSON.stringify({ voice: join(clipDir, 'chair-take.wav'), voiceAt: voiceAt - zero, release: 11, result: builtAt - zero, edit: { release: editRelease - zero, done: editedAt - zero, ok: edited, parts: after }, paint: paintAt - zero, painted: paintedAt - zero, speech }, null, 1));
   return ok && parts ? 'result' : 'failed';
 }
 
 // ---------- run ----------
 
-const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'three', 'hold', 'chair'];
+const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'three', 'hold', 'move', 'chair'];
 const browser = await chromium.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: !process.env.HEADED,
@@ -373,7 +449,7 @@ const results: Record<string, string> = {};
 for (const name of wanted) {
   try {
     if (name === 'hold') results[name] = results.three === 'result' ? await sceneHold(page, rec) : 'skipped (no result from "three")';
-    else if (name === 'chair') results[name] = await sceneChair(page, rec);
+    else if (name === 'chair') results[name] = await sceneChair(page, cdp, rec);
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {
     results[name] = `error: ${String(e?.message ?? e).split('\n')[0]}`;

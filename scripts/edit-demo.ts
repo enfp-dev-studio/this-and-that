@@ -10,7 +10,7 @@
 //
 //   node scripts/edit-demo.ts
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp, { type OverlayOptions } from 'sharp';
@@ -25,6 +25,9 @@ const FONT = "'Helvetica Neue', Helvetica, 'Apple SD Gothic Neo', sans-serif";
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const ff = (args: string[]) => execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...args]);
 const dur = (f: string) => Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString());
+// The marks' colours (theme.css --mark-1 … --mark-6, dark) and the takes' voice (capture-demo.ts).
+const MARK = ['#ff3e3b', '#268bfc', '#40c95d', '#ffa326', '#b46afa', '#ff49a2'];
+const VOICE = 'Samantha';
 const ENC = ['-r', '30', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2'];
 let seq = 0;
 const parts: string[] = [];
@@ -62,11 +65,15 @@ async function subtitle(text: string, file: string) {
 
 // ---------- clips ----------
 
-type Sub = { from: number; to: number; text: string };
+type Sub = { from: number; to: number; text: string; png?: string }; // `png`: a full frame to show instead of `text`
 // Real time until `real`, ×4 until `fastUntil`, then real time; `zoom`: the
 // camera's keyframes (source time, zoom, focus in the clip's 1600×1000 px).
 type Key = { t: number; z: number; x: number; y: number };
-type Plan = { real: number; fastUntil: number; subs: Sub[]; zoom?: Key[]; voice?: { file: string; at: number }; hold?: number };
+type Plan = { real: number; fastUntil: number; subs: Sub[]; zoom?: Key[]; voice?: { file: string; at: number }; hold?: number; segs?: Seg[]; pulses?: Pulse[] };
+// A ring swelling out of a mark at source time `t` (capture px).
+type Pulse = { t: number; x: number; y: number; rx: number; ry: number; color: string };
+// Stretches of a clip in order, each in real time or ×4 (`segs` overrides real/fastUntil).
+type Seg = { from: number; to: number; fast?: boolean };
 
 // An ffmpeg expression easing (smoothstep) between keyframes, of time `T`.
 function eased(keys: Key[], pick: (k: Key) => number, T: string) {
@@ -79,52 +86,124 @@ function eased(keys: Key[], pick: (k: Key) => number, T: string) {
   return `if(lt(${T},${keys[0].t.toFixed(2)}),${pick(keys[0]).toFixed(3)},${e})`;
 }
 
+// A ring that swells and fades over 0.67 s, as PNG frames (<prefix>-NN.png).
+async function pulseFrames(prefix: string, p: Pulse) {
+  const w = Math.ceil(p.rx * 2.9 + 40), h = Math.ceil(p.ry * 2.9 + 40);
+  for (let i = 0; i < 20; i++) {
+    const u = i / 19, k = 1 + 0.35 * u;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><ellipse cx="${w / 2}" cy="${h / 2}" rx="${(p.rx * k).toFixed(1)}" ry="${(p.ry * k).toFixed(1)}" fill="${p.color}" fill-opacity="${(0.22 * (1 - u)).toFixed(3)}" stroke="${p.color}" stroke-opacity="${(0.95 * (1 - u) ** 1.3).toFixed(3)}" stroke-width="${(14 * (1 - u) + 3).toFixed(1)}"/></svg>`;
+    await sharp(Buffer.from(svg)).png().toFile(`${prefix}-${String(i).padStart(2, '0')}.png`);
+  }
+  return { pattern: `${prefix}-%02d.png`, w, h };
+}
+
 async function clip(name: string, plan: Plan) {
   const src = join(demo, `${name}.mp4`);
   if (!existsSync(src)) return console.log(`(no ${name}.mp4, skipped)`);
-  const inputs = ['-i', src];
-  const subFiles: string[] = [];
-  for (const [i, s] of plan.subs.entries()) {
-    const f = join(work, `sub-${name}-${i}.png`);
-    await subtitle(s.text, f);
-    subFiles.push(f);
-    inputs.push('-i', f);
+  const inputs: string[] = [];
+  const input = (...args: string[]) => (inputs.push(...args), inputs.filter((a) => a === '-i').length - 1); // its index
+  input('-i', src);
+  // 1600×1000 on a 16:9 dark canvas (1778×1000), the pulses drawn on it (so
+  // the camera carries them), then the camera: zoompan crops around the focus
+  // at the keyframed zoom and scales to 1920×1080.
+  const T = 'on/30', PADX = 89;
+  const f: string[] = [`[0:v]fps=30,pad=1778:1000:${PADX}:0:color=0x0a0a0a[p0]`];
+  const pulses = plan.pulses ?? [];
+  for (const [j, p] of pulses.entries()) {
+    const { pattern, w, h } = await pulseFrames(join(work, `pulse-${name}-${j}`), p);
+    const k = input('-framerate', '30', '-i', pattern);
+    f.push(`[${k}:v]setpts=PTS-STARTPTS+${p.t.toFixed(3)}/TB[q${j}]`, `[p${j}][q${j}]overlay=${Math.round(p.x + PADX - w / 2)}:${Math.round(p.y - h / 2)}:eof_action=pass[p${j + 1}]`);
+  }
+  const keys = plan.zoom ?? [{ t: 0, z: 1, x: 800, y: 500 }];
+  const z = eased(keys, (k) => k.z, T);
+  const fx = eased(keys, (k) => k.x + PADX, T), fy = eased(keys, (k) => k.y, T);
+  f.push(`[p${pulses.length}]zoompan=z='${z}':x='max(0,min(iw-iw/zoom,(${fx})-iw/zoom/2))':y='max(0,min(ih-ih/zoom,(${fy})-ih/zoom/2))':d=1:s=${W}x${H}:fps=30[v0]`);
+  for (const [i, sub] of plan.subs.entries()) {
+    let png = sub.png;
+    if (!png) await subtitle(sub.text, (png = join(work, `sub-${name}-${i}.png`)));
+    const k = input('-i', png);
+    f.push(`[v${i}][${k}:v]overlay=0:0:enable='between(t,${sub.from.toFixed(3)},${sub.to.toFixed(3)})'[v${i + 1}]`);
   }
   const x4 = join(work, 'x4.png');
   if (!existsSync(x4)) await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="64"><rect width="120" height="64" rx="10" fill="#000" fill-opacity="0.7"/><text x="60" y="44" font-family="${FONT}" font-size="34" font-weight="700" fill="#fff" text-anchor="middle">×4</text></svg>`)).png().toFile(x4);
-  inputs.push('-i', x4);
-  const x4i = subFiles.length + 1;
-  // 1600×1000 on a 16:9 dark canvas (1778×1000), then the camera: zoompan
-  // crops around the focus at the keyframed zoom and scales to 1920×1080.
-  const keys = plan.zoom ?? [{ t: 0, z: 1, x: 800, y: 500 }];
-  const T = 'on/30', PADX = 89;
-  const z = eased(keys, (k) => k.z, T);
-  const fx = eased(keys, (k) => k.x + PADX, T), fy = eased(keys, (k) => k.y, T);
-  const f: string[] = [`[0:v]fps=30,pad=1778:1000:${PADX}:0:color=0x0a0a0a,zoompan=z='${z}':x='max(0,min(iw-iw/zoom,(${fx})-iw/zoom/2))':y='max(0,min(ih-ih/zoom,(${fy})-ih/zoom/2))':d=1:s=${W}x${H}:fps=30[v0]`];
-  plan.subs.forEach((s, i) => f.push(`[v${i}][${i + 1}:v]overlay=0:0:enable='between(t,${s.from.toFixed(2)},${s.to.toFixed(2)})'[v${i + 1}]`));
+  const x4i = input('-i', x4);
   const v = `[v${plan.subs.length}]`;
-  const fast = plan.fastUntil - plan.real > 1.5;
-  const hold = plan.hold ? `,tpad=stop_mode=clone:stop_duration=${plan.hold}` : '';
-  if (fast) {
-    f.push(`${v}split=3[a][b][c]`, `[a]trim=0:${plan.real},setpts=PTS-STARTPTS[s1]`, `[b]trim=${plan.real}:${plan.fastUntil},setpts=(PTS-STARTPTS)/4[fb]`, `[fb][${x4i}:v]overlay=W-w-48:${H - 120}[s2]`, `[c]trim=${plan.fastUntil},setpts=PTS-STARTPTS${hold}[s3]`, `[s1][s2][s3]concat=n=3:v=1:a=0[out]`);
-  } else f.push(`${v}null${hold}[out]`);
-  // The take's voice at its time in the real-time part; silence after (the waits, the result).
   const D = dur(src);
-  const outDur = (fast ? plan.real + (plan.fastUntil - plan.real) / 4 + (D - plan.fastUntil) : D) + (plan.hold ?? 0);
+  const segs: Seg[] = plan.segs ?? (plan.fastUntil - plan.real > 1.5 ? [{ from: 0, to: plan.real }, { from: plan.real, to: plan.fastUntil, fast: true }, { from: plan.fastUntil, to: D }] : [{ from: 0, to: D }]);
+  const hold = plan.hold ? `,tpad=stop_mode=clone:stop_duration=${plan.hold}` : '';
+  const nFast = segs.filter((g) => g.fast).length;
+  f.push(`${v}split=${segs.length}${segs.map((_, i) => `[g${i}]`).join('')}`);
+  if (nFast) f.push(`[${x4i}:v]split=${nFast}${segs.filter((g) => g.fast).map((_, i) => `[x${i}]`).join('')}`);
+  let xi = 0;
+  segs.forEach((g, i) => {
+    const last = i === segs.length - 1 ? hold : '';
+    if (g.fast) {
+      f.push(`[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=(PTS-STARTPTS)/4[gf${i}]`, `[gf${i}][x${xi++}]overlay=W-w-48:${H - 120}${last}[s${i}]`);
+    } else f.push(`[g${i}]trim=${g.from.toFixed(3)}:${g.to.toFixed(3)},setpts=PTS-STARTPTS${last}[s${i}]`);
+  });
+  f.push(`${segs.map((_, i) => `[s${i}]`).join('')}concat=n=${segs.length}:v=1:a=0[out]`);
+  const fast = nFast > 0;
+  // The take's voice at its times in the clip, heard in the real-time stretches (the ×4 ones are silent).
+  const outDur = segs.reduce((sum, g) => sum + (g.to - g.from) / (g.fast ? 4 : 1), 0) + (plan.hold ?? 0);
   if (plan.voice) {
-    inputs.push('-i', plan.voice.file);
+    const vi = input('-i', plan.voice.file);
     const ms = Math.max(0, Math.round(plan.voice.at * 1000));
     const skip = Math.max(0, -plan.voice.at);
-    f.push(`[${x4i + 1}:a]atrim=start=${skip.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${ms}|${ms},atrim=0:${(fast ? plan.real : outDur).toFixed(3)},aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${outDur.toFixed(3)}[aout]`);
+    const A = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo';
+    const real = segs.flatMap((g, i) => (g.fast ? [] : [i]));
+    f.push(`[${vi}:a]atrim=start=${skip.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${ms}|${ms},aresample=48000,${A},apad=whole_dur=${D.toFixed(3)},asplit=${real.length}${real.map((i) => `[va${i}]`).join('')}`);
+    segs.forEach((g, i) => f.push(g.fast ? `anullsrc=r=48000:cl=stereo,atrim=0:${((g.to - g.from) / 4).toFixed(3)},${A}[a${i}]` : `[va${i}]atrim=${g.from.toFixed(3)}:${g.to.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`));
+    f.push(`${segs.map((_, i) => `[a${i}]`).join('')}concat=n=${segs.length}:v=0:a=1,apad=whole_dur=${outDur.toFixed(3)}[aout]`);
   } else f.push(`anullsrc=r=48000:cl=stereo,atrim=0:${outDur.toFixed(3)}[aout]`);
   const out = join(work, `${String(seq++).padStart(2, '0')}-${name}.mp4`);
   ff([...inputs, '-filter_complex', f.join(';'), '-map', '[out]', '-map', '[aout]', ...ENC, '-shortest', out]);
   parts.push(out);
-  console.log(`${name}: ${dur(src).toFixed(1)} s → ${dur(out).toFixed(1)} s${fast ? ` (×4 from ${plan.real.toFixed(1)} to ${plan.fastUntil.toFixed(1)} s)` : ''}`);
+  console.log(`${name}: ${D.toFixed(1)} s → ${dur(out).toFixed(1)} s${fast ? ` (×4: ${segs.filter((g) => g.fast).map((g) => `${g.from.toFixed(1)}–${g.to.toFixed(1)}`).join(', ')} s)` : ''}`);
+}
+
+// The problem in one shot: typing the macaron's position got the wrong one
+// (the text-only bench, round 1), one tap and four words got the right one.
+async function macaronBeat() {
+  const t = timing('macaron');
+  const gray2 = '#a1a1aa';
+  const prompt = JSON.parse(readFileSync(join(root, 'out', 'bench-hard', 'grid', 'text-1.json'), 'utf8')).instruction as string;
+  const words = prompt.split(/\s+/);
+  const half = Math.ceil(words.length / 2);
+  // Left: the typed instruction over the wrong result, the wrong macaron ringed.
+  const ringed = await sharp(join(root, 'out', 'bench-hard', 'grid', 'text-1.jpg')).resize(1920, 1280).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1280"><ellipse cx="1022" cy="776" rx="140" ry="160" fill="none" stroke="#ef4444" stroke-width="14"/></svg>`), left: 0, top: 0 }]).toBuffer();
+  const wrong = await sharp(ringed).resize(860).toBuffer();
+  const line = (x: number, y: number, size: number, text: string, color = '#fafafa', weight = 500) => `<text x="${x}" y="${y}" font-family="${FONT}" font-size="${size}" font-weight="${weight}" fill="${color}" text-anchor="middle">${esc(text)}</text>`;
+  const bg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="${BG}"/><rect x="959" y="120" width="2" height="840" fill="#27272a"/>${line(480, 150, 34, 'Typing it', gray2)}${line(480, 205, 28, `“${words.slice(0, half).join(' ')}`)}${line(480, 245, 28, `${words.slice(half).join(' ')}”`)}${line(1440, 150, 34, 'Showing it', gray2)}${line(480, 990, 52, '47 words, 2 rounds', '#f87171', 700)}${line(1440, 990, 52, '4 words, 1 try', '#4ade80', 700)}</svg>`;
+  const png = join(work, 'macaron-bg.png');
+  await sharp(Buffer.from(bg)).composite([{ input: wrong, left: 50, top: 300 }]).png().toFile(png);
+  // Right: the take, cropped to the picture: tap and say it, a short wait at ×4, the right one.
+  const src = join(demo, 'macaron.mp4');
+  const s0 = Math.max(0, t.voiceAt - 0.3), s1 = t.release + 0.8, s2 = t.result - 0.3, s3 = Math.min(dur(src), t.result + 3);
+  const subPng = join(work, 'sub-macaron.png');
+  await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="80"><rect x="${(900 - 520) / 2}" y="4" width="520" height="70" rx="10" fill="#000" fill-opacity="0.72"/><text x="450" y="52" font-family="${FONT}" font-size="40" font-weight="500" fill="#fff" text-anchor="middle">${esc(t.speech[0].say)}</text></svg>`)).png().toFile(subPng);
+  const x4 = join(work, 'x4.png');
+  const say = { from: t.voiceAt + t.speech[0].at - s0 - 0.1, to: t.voiceAt + t.speech[0].at + t.speech[0].dur - s0 + 0.5 };
+  const d1 = s1 - s0, d2 = (s2 - s1) / 4, d3 = s3 - s2, total = d1 + d2 + d3 + 1.5;
+  const f = [
+    // the picture's place in the capture (fit(): 1176×784 at 212,88) and a little around it
+    `[1:v]fps=30,crop=1236:824:182:58,scale=860:574,split=3[m0][m1][m2]`,
+    `[m0]trim=${s0.toFixed(3)}:${s1.toFixed(3)},setpts=PTS-STARTPTS[r0]`,
+    `[m1]trim=${s1.toFixed(3)}:${s2.toFixed(3)},setpts=(PTS-STARTPTS)/4[f1]`,
+    `[f1][3:v]overlay=W-w-16:H-h-16:shortest=1[r1]`,
+    `[m2]trim=${s2.toFixed(3)}:${s3.toFixed(3)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=1.5[r2]`,
+    `[r0][r1][r2]concat=n=3:v=1:a=0[mv]`,
+    `[0:v][mv]overlay=1010:300:shortest=1[b0]`,
+    `[b0][2:v]overlay=1010:${300 + 574 - 90}:enable='between(t,${say.from.toFixed(2)},${say.to.toFixed(2)})',fade=in:0:8,fade=out:st=${(total - 0.3).toFixed(2)}:d=0.3[out]`,
+    `[4:a]atrim=start=${Math.max(0, s0 - t.voiceAt).toFixed(3)},asetpts=PTS-STARTPTS,adelay=${Math.round(Math.max(0, t.voiceAt - s0) * 1000)}|${Math.round(Math.max(0, t.voiceAt - s0) * 1000)},atrim=0:${d1.toFixed(3)},aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${total.toFixed(3)}[aout]`,
+  ];
+  const out = join(work, `${String(seq++).padStart(2, '0')}-macaron-beat.mp4`);
+  ff(['-loop', '1', '-t', total.toFixed(3), '-i', png, '-i', src, '-loop', '1', '-t', total.toFixed(3), '-i', subPng, '-loop', '1', '-t', total.toFixed(3), '-i', x4, '-i', t.voice, '-filter_complex', f.join(';'), '-map', '[out]', '-map', '[aout]', ...ENC, '-t', total.toFixed(3), out]);
+  parts.push(out);
+  console.log(`macaron beat: ${dur(out).toFixed(1)} s`);
 }
 
 // Each take's times in its clip and what was said when (capture-demo.ts).
-type Timing = { voice: string; voiceAt: number; release: number; result: number; speech: { at: number; dur: number; say: string }[] };
+type Timing = { voice: string; voiceAt: number; release: number; result: number; edit?: { release: number; done: number; ok: boolean }; paint?: number; painted?: number; speech: { at: number; dur: number; say: string }[] };
 const timing = (name: string): Timing => JSON.parse(readFileSync(join(demo, `${name}.timing.json`), 'utf8'));
 
 // Subtitles: the exact spoken words, one cue at a time.
@@ -172,37 +251,190 @@ function plan2d(name: string, image: string, ref = false): Plan {
     { t: out + 0.9, z: 1, x: 800, y: 500 },
   ];
   // Real time while drawing and while the instructions appear, ×4 for the wait, the result in real time (held 4 s more).
-  return { real: out + 0.9, fastUntil: t.result - 0.6, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, hold: 4 };
+  return { real: out + 0.9, fastUntil: t.result - 0.6, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt }, hold: 3 };
+}
+
+// ---------- pointing words ----------
+
+// When each word of a line starts (s from the line's start) as `say -v VOICE`
+// speaks it: how long saying the words before it takes.
+function wordStarts(line: string) {
+  const words = line.split(/\s+/);
+  const f = join(work, 'prefix.aiff');
+  return words.map((word, i) => {
+    if (i === 0) return { word, at: 0.05 };
+    execFileSync('say', ['-v', VOICE, '-o', f, words.slice(0, i).join(' ')]);
+    return { word, at: Math.max(0, speechEnd(f) - 0.06) };
+  });
+}
+// Where the sound ends: the start of the silence that runs to the file's end.
+function speechEnd(file: string) {
+  const log = spawnSync('ffmpeg', ['-i', file, '-af', 'silencedetect=n=-40dB:d=0.04', '-f', 'null', '-']).stderr.toString();
+  const starts = [...log.matchAll(/silence_start: ([\d.]+)/g)].map((m) => Number(m[1]));
+  const ends = [...log.matchAll(/silence_end: ([\d.]+)/g)].map((m) => Number(m[1]));
+  const D = dur(file);
+  const last = starts.at(-1);
+  return last !== undefined && (ends.length < starts.length || ends.at(-1)! >= D - 0.05) ? last : D;
+}
+
+// Each mark's place in the capture (an ellipse around its stroke).
+function markRings(name: string, image: string) {
+  const strokes = JSON.parse(readFileSync(join(demo, 'clips', `${name}.json`), 'utf8')).strokes as { mark: number; points: { x: number; y: number }[] }[];
+  const [nw, nh] = size(image);
+  const pic = fit(nw, nh, false);
+  return strokes.map((st) => {
+    const xs = st.points.map((p) => pic.x + p.x * pic.k), ys = st.points.map((p) => pic.y + p.y * pic.k);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, rx: Math.max(28, (x1 - x0) / 2) * 1.08, ry: Math.max(28, (y1 - y0) / 2) * 1.08, color: MARK[(st.mark - 1) % MARK.length] };
+  });
+}
+
+type Word = { text: string; at: number; mark?: number };
+// The whole line, the first `lit` words said; "this"/"here" bold, in its mark's colour once said.
+async function karaokeLine(words: Word[], lit: number, file: string) {
+  const size = 46, text = words.map((w) => w.text).join(' ');
+  const w = Math.min(W - 120, Math.round(text.length * size * 0.5) + 64);
+  const spans = words.map((x, i) => {
+    const said = i < lit;
+    const fill = said ? (x.mark !== undefined ? MARK[x.mark] : '#ffffff') : '#71717a';
+    return `<tspan fill="${fill}"${x.mark !== undefined ? ' font-weight="700"' : ''}>${esc(x.text)}</tspan>`;
+  });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${(W - w) / 2}" y="${H - 150}" width="${w}" height="76" rx="10" fill="#000" fill-opacity="0.75"/><text xml:space="preserve" x="${W / 2}" y="${H - 150 + 52}" font-family="${FONT}" font-size="${size}" font-weight="500" text-anchor="middle">${spans.join(' ')}</text></svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(file);
+}
+// Which word went to which mark: numbered chips, the first `n` shown (places fixed).
+async function chips(items: string[], n: number, file: string) {
+  const size = 40, gap = 24, y = H - 150;
+  const widths = items.map((t) => Math.round(t.length * size * 0.5) + 104);
+  let x = (W - widths.reduce((a, b) => a + b, 0) - gap * (items.length - 1)) / 2;
+  const out = items.map((t, i) => {
+    const c = `<rect x="${x}" y="${y}" width="${widths[i]}" height="76" rx="10" fill="#000" fill-opacity="0.78"/><circle cx="${x + 40}" cy="${y + 38}" r="22" fill="${MARK[i]}"/><text x="${x + 40}" y="${y + 48}" font-family="${FONT}" font-size="28" font-weight="700" fill="#fff" text-anchor="middle">${i + 1}</text><text x="${x + 74}" y="${y + 52}" font-family="${FONT}" font-size="${size}" font-weight="500" fill="#fff">${esc(t)}</text>`;
+    x += widths[i] + gap;
+    return i < n ? c : '';
+  });
+  await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${out.join('')}</svg>`)).png().toFile(file);
+}
+
+// A take whose words point: karaoke subtitles (each word lit as it is said,
+// "this"/"here" in its mark's colour) with that mark pulsing the moment it is
+// said; then, as the app's numbered callouts land, which word went to which mark.
+async function pointing(name: string, image: string, plan: Plan, legend: string[]): Promise<Plan> {
+  const t = timing(name);
+  const rings = markRings(name, image);
+  const words: Word[] = [];
+  t.speech.forEach((p, i) => {
+    let pointed = false;
+    for (const w of wordStarts(p.say)) {
+      const deictic: boolean = !pointed && /^(this|that|here|there)\b/i.test(w.word);
+      pointed ||= deictic;
+      words.push({ text: w.word, at: t.voiceAt + p.at + w.at, mark: deictic ? i : undefined });
+    }
+  });
+  const landed = t.release + 4.2; // the callouts appear (Spark's answer), ~4 s after the pen lifts
+  const subs: Sub[] = [];
+  for (let k = 0; k <= words.length; k++) {
+    const png = join(work, `say-${name}-${k}.png`);
+    await karaokeLine(words, k, png);
+    subs.push({ from: k ? words[k - 1].at : words[0].at - 0.5, to: k < words.length ? words[k].at - 0.001 : landed - 0.05, text: '', png });
+  }
+  for (let i = 0; i < legend.length; i++) {
+    const png = join(work, `chips-${name}-${i}.png`);
+    await chips(legend, i + 1, png);
+    subs.push({ from: landed + 0.3 * i, to: i < legend.length - 1 ? landed + 0.3 * (i + 1) - 0.001 : plan.real - 0.1, text: '', png });
+  }
+  const pulses: Pulse[] = words.filter((w) => w.mark !== undefined).map((w) => ({ t: w.at, ...rings[w.mark!] }));
+  legend.forEach((_, i) => pulses.push({ t: landed + 0.3 * i, ...rings[i] }));
+  return { ...plan, subs, pulses };
+}
+
+// Select → type → wait, three times, beside one take (sped up, generic boxes
+// and a text field: no real product's look).
+async function compareCard(seconds: number) {
+  const img = join(root, 'samples', 'illust', 'keyvisual.jpg');
+  const [nw, nh] = size(img);
+  const tw = 760, th = Math.round((tw * nh) / nw), k = tw / nw;
+  const thumb = await sharp(img).resize(tw).toBuffer();
+  const L = { x: 100, y: 220 }, R = { x: 1060, y: 220 };
+  const strokes = JSON.parse(readFileSync(join(demo, 'clips', 'three.json'), 'utf8')).strokes as { points: { x: number; y: number }[] }[];
+  const boxes = strokes.map((st) => {
+    const xs = st.points.map((p) => p.x * k), ys = st.points.map((p) => p.y * k);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  });
+  const prompts = ['Remove the phone in her hand', 'Make her blazer red', 'Add a small star in the sky'];
+  const said = timing('three').speech.map((p) => p.say);
+  const txt = (x: number, y: number, size: number, text: string, color = '#fafafa', weight = 500, anchor = 'middle', op = 1) => `<text x="${x}" y="${y}" font-family="${FONT}" font-size="${size}" font-weight="${weight}" fill="${color}" fill-opacity="${op}" text-anchor="${anchor}">${esc(text)}</text>`;
+  const base = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="${BG}"/><rect x="959" y="110" width="2" height="900" fill="#27272a"/>${txt(480, 160, 44, 'Select → type → wait, ×3', '#e4e4e7', 600)}${txt(1440, 160, 44, 'One take', '#e4e4e7', 600)}</svg>`))
+    .composite([{ input: thumb, left: L.x, top: L.y }, { input: thumb, left: R.x, top: R.y }]).png().toBuffer();
+  const dir = join(work, 'compare');
+  mkdirSync(dir, { recursive: true });
+  const ease = (u: number) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
+  const N = Math.round(seconds * 30);
+  for (let i = 0; i < N; i++) {
+    const t = i / 30;
+    let o = '';
+    // Left: a round per edit (2 s): drag a box, type, wait.
+    const round = Math.min(2, Math.floor((t - 0.4) / 2)), u = t - 0.4 - 2 * round;
+    if (t >= 0.4) {
+      for (let j = 0; j <= round; j++) {
+        const [x0, y0, x1, y1] = boxes[j];
+        const g = j < round || u >= 2 ? 1 : ease(u / 0.5);
+        o += `<rect x="${L.x + x0}" y="${L.y + y0}" width="${((x1 - x0) * g).toFixed(1)}" height="${((y1 - y0) * g).toFixed(1)}" fill="#fff" fill-opacity="${j === round && u < 2 ? 0.12 : 0.05}" stroke="#fff" stroke-opacity="${j === round && u < 2 ? 1 : 0.4}" stroke-width="3" stroke-dasharray="10 7"/>`;
+      }
+      const fy = L.y + th + 22;
+      const typed = u < 0.5 ? '' : prompts[round].slice(0, Math.ceil(prompts[round].length * Math.min(1, (u - 0.5) / 0.8)));
+      o += `<rect x="${L.x}" y="${fy}" width="${tw}" height="62" rx="8" fill="#18181b" stroke="#3f3f46" stroke-width="2"/>`;
+      o += txt(L.x + 20, fy + 41, 30, typed + (u >= 0.5 && u < 1.3 && Math.floor(t * 4) % 2 ? '|' : ''), '#e4e4e7', 400, 'start');
+      if (u < 0.5 && round < 3) o += txt(L.x + 20, fy + 41, 30, 'Describe the change…', '#52525b', 400, 'start');
+      if (u >= 1.3 && u < 2) o += `<rect x="${L.x}" y="${fy + 78}" width="${tw}" height="8" rx="4" fill="#27272a"/><rect x="${L.x}" y="${fy + 78}" width="${(tw * Math.min(1, (u - 1.3) / 0.7)).toFixed(1)}" height="8" rx="4" fill="#a1a1aa"/>` + txt(L.x + tw, fy + 118, 26, 'Generating…', '#a1a1aa', 400, 'end');
+      o += txt(L.x, fy + 118, 26, `Edit ${round + 1} of 3`, '#a1a1aa', 400, 'start');
+    }
+    // Right: the three marks drawn while the sentence is said.
+    for (let j = 0; j < 3; j++) {
+      const a = 0.4 + 0.8 * j, g = Math.max(0, Math.min(1, (t - a) / 0.75));
+      if (g <= 0) continue;
+      const pts = strokes[j].points;
+      const n = Math.max(2, Math.round(pts.length * g));
+      o += `<polyline points="${pts.slice(0, n).map((p) => `${(R.x + p.x * k).toFixed(1)},${(R.y + p.y * k).toFixed(1)}`).join(' ')}" fill="none" stroke="${MARK[j]}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+    const lines = [said.slice(0, 2).join(' '), said[2]];
+    const shown = said.filter((_, j) => t >= 0.4 + 0.8 * j).length;
+    if (shown) o += txt(1440, R.y + th + 62, 32, shown >= 2 ? lines[0] : said[0], '#fafafa', 500) + (shown >= 3 ? txt(1440, R.y + th + 106, 32, lines[1], '#fafafa', 500) : '');
+    // The times: one take is done long before the third round.
+    if (t >= 3) o += txt(1440, 1010, 64, 'One take: 6 s', '#4ade80', 700, 'middle', ease((t - 3) / 0.3));
+    if (t >= 6.4) o += txt(480, 1010, 64, '~1.5 min', '#f87171', 700, 'middle', ease((t - 6.4) / 0.3));
+    await sharp(base).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${o}</svg>`), left: 0, top: 0 }]).png().toFile(join(dir, `${String(i).padStart(3, '0')}.png`));
+  }
+  const out = join(work, `${String(seq++).padStart(2, '0')}-compare.mp4`);
+  ff(['-framerate', '30', '-i', join(dir, '%03d.png'), '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', String(seconds), '-vf', `fade=in:0:8,fade=out:st=${seconds - 0.3}:d=0.3`, '-map', '0:v', '-map', '1:a', ...ENC, out]);
+  parts.push(out);
+  console.log(`compare: ${dur(out).toFixed(1)} s`);
 }
 
 // ---------- the cut (DEMO.md) ----------
 
 const gray = '#a1a1aa';
-// 0:00 the hook
+const LINE = ['Complex edits, asked simply:', 'draw and talk at the same time.'];
+// 0:00 the line, then the problem
+await card([{ text: LINE[0], size: 72, weight: 600 }, { text: LINE[1], size: 72, weight: 600, gap: 40 }, { text: 'This & That', size: 44, color: gray }], 4);
+await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }, { text: 'The last 10% is details, and words can’t point.', size: 52, color: gray }], 4);
+// x4 label, made once (the macaron beat uses it too)
+await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="64"><rect width="120" height="64" rx="10" fill="#000" fill-opacity="0.7"/><text x="60" y="44" font-family="${FONT}" font-size="34" font-weight="700" fill="#fff" text-anchor="middle">×4</text></svg>`)).png().toFile(join(work, 'x4.png'));
+// simple to complex: one tap, a shape, three edits in one breath, a direction, 3D
+await macaronBeat();
+await card([{ text: 'A sketch says how.', size: 72, weight: 600 }], 2.5);
 await clip('hook', plan2d('hook', join(root, 'samples', 'illust', 'armor.jpg')));
-await card([{ text: 'This & That', size: 120, weight: 700 }, { text: 'Show it. Say it. Done.', size: 54, color: gray }], 4);
-// the problem
-await card([{ text: 'AI art gets you 90% there.', size: 72, weight: 600 }], 3);
-await card([{ text: 'The last 10% is details.', size: 72, weight: 600 }], 3);
-await card([{ text: 'And words can’t point.', size: 72, weight: 600 }], 3);
-const prompt = JSON.parse(readFileSync(join(root, 'out', 'bench-hard', 'grid', 'text-1.json'), 'utf8')).instruction as string;
-await card(
-  [
-    { text: 'Typing it:', size: 40, color: gray, gap: 10 },
-    { text: `“${prompt.slice(0, 64)}`, size: 38, gap: 6 },
-    { text: `${prompt.slice(64)}”`, size: 38, gap: 24 },
-    { text: 'Round 1: the wrong macaron changed (the 4th, not the 5th).', size: 36, color: '#f87171' },
-  ],
-  6,
-  { file: join(root, 'out', 'bench-hard', 'grid', 'text-1.jpg'), width: 900 },
-);
-await clip('macaron', plan2d('macaron', join(root, 'out', 'bench-hard', 'grid', 'original.png')));
-await card([{ text: '47 words, 2 rounds', size: 64, weight: 600, color: gray }, { text: 'vs', size: 40, color: gray }, { text: '“Make this one chocolate.” One tap, one sentence.', size: 60, weight: 600 }], 4);
-// several edits at once
-await card([{ text: 'Several edits, one sentence.', size: 72, weight: 600 }], 3);
-await clip('three', plan2d('three', join(root, 'samples', 'illust', 'keyvisual.jpg')));
+await compareCard(7.5);
+{
+  const image = join(root, 'samples', 'illust', 'keyvisual.jpg');
+  await clip('three', await pointing('three', image, plan2d('three', image), ['“this” → the phone', '“this” → the blazer', '“here” → the sky']));
+}
 await clip('hold', { real: 99, fastUntil: 99, subs: [] });
-await card([{ text: 'Only what you marked changes.', size: 72, weight: 600 }], 3.5);
+await card([{ text: 'Only what you marked changes.', size: 72, weight: 600 }], 3);
+if (existsSync(join(demo, 'move.timing.json'))) {
+  await card([{ text: 'Even where it should go.', size: 72, weight: 600 }], 2.5);
+  const image = join(root, 'samples', 'desk.png');
+  await clip('move', await pointing('move', image, plan2d('move', image), ['“this” → the cactus', '“here” → where it goes']));
+}
 // the evidence
 await card(
   [
@@ -213,29 +445,73 @@ await card(
   7,
   { file: join(root, 'out', 'bench-hard', 'diff-street.jpg'), width: 1500 },
 );
-await card([{ text: '124 words → ~30', size: 72, weight: 600 }, { text: '~3 min of typing → ~18 s of drawing and talking', size: 52, color: gray }], 5);
 // how it works
 await card(
   [
     { text: 'How it works', size: 60, weight: 700, gap: 34 },
-    { text: 'Your strokes and your voice become one video.', size: 40 },
-    { text: 'Muse Spark watches and listens: which mark, which words.', size: 40 },
-    { text: 'SAM 3.1 turns a rough circle into an exact mask.', size: 40 },
-    { text: 'Muse Image makes the edit.', size: 40 },
-    { text: 'Voice Transcribe hears you live, in any language.', size: 40 },
+    { text: 'Strokes + voice → one video', size: 44 },
+    { text: 'Muse Spark: which mark, which words', size: 44 },
+    { text: 'SAM 3.1: rough circle → exact mask', size: 44 },
+    { text: 'Muse Image: the edit', size: 44 },
+    { text: 'Voice Transcribe: hears you live', size: 44 },
   ],
-  9,
+  6,
 );
 // next: 3D
 await card([{ text: 'Next: the same gesture in 3D.', size: 72, weight: 600 }], 3);
 {
   const t = timing('chair');
   const D = dur(join(demo, 'chair.mp4'));
-  // In on the sketch while it is drawn, out to watch it built and turning.
-  const zoom: Key[] = [{ t: 1, z: 1, x: 800, y: 500 }, { t: 2, z: 1.3, x: 800, y: 470 }, { t: 10.5, z: 1.3, x: 800, y: 470 }, { t: 11.5, z: 1.08, x: 800, y: 480 }];
-  await clip('chair', { real: 11.5, fastUntil: Math.min(D - 8, t.result - 0.3), subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
+  const built = t.result, paint = t.paint ?? D, painted = t.painted ?? D;
+  const edit = t.edit?.ok ? t.edit : null;
+  const c = { x: 800, y: 520 };
+  // The camera: in on the sketch while it is drawn, closer on the model while
+  // it turns, out a little for the edit (the talk button in view), in again,
+  // out to show the Paint click, and in on the painted chair.
+  const zoom: Key[] = [
+    { t: 1, z: 1, x: 800, y: 500 },
+    { t: 2, z: 1.3, x: 800, y: 470 },
+    { t: 10.5, z: 1.3, x: 800, y: 470 },
+    { t: 12, z: 1.45, ...c },
+    ...(edit
+      ? [
+          { t: built + 2.2, z: 1.45, ...c },
+          { t: built + 3.2, z: 1.15, x: 800, y: 560 },
+          { t: edit.release + 0.8, z: 1.15, x: 800, y: 560 },
+          { t: edit.done, z: 1.45, ...c },
+        ]
+      : []),
+    { t: paint - 1.2, z: 1.45, ...c },
+    { t: paint - 0.3, z: 1.05, x: 800, y: 500 },
+    { t: paint + 1.2, z: 1.05, x: 800, y: 500 },
+    { t: painted - 0.5, z: 1.45, ...c },
+  ];
+  // Real time while drawing, editing, painting's click and the turns; ×4 for the waits.
+  const segs: Seg[] = [
+    { from: 0, to: 11.5 },
+    { from: 11.5, to: built - 0.3, fast: true },
+    ...(edit
+      ? [
+          { from: built - 0.3, to: edit.release + 0.8 },
+          { from: edit.release + 0.8, to: edit.done - 0.3, fast: true },
+          { from: edit.done - 0.3, to: paint + 1.2 },
+        ]
+      : [{ from: built - 0.3, to: paint + 1.2 }]),
+    { from: paint + 1.2, to: painted - 0.3, fast: true },
+    { from: painted - 0.3, to: D },
+  ];
+  await clip('chair', { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
 }
-await card([{ text: 'This & That', size: 120, weight: 700 }, { text: 'Built with Meta’s Muse models', size: 46, color: gray, gap: 40 }, { text: 'github.com/enfp-dev-studio/this-and-that', size: 40, color: gray }], 5.5);
+await card(
+  [
+    { text: 'This & That', size: 120, weight: 700, gap: 36 },
+    { text: `${LINE[0]} ${LINE[1]}`, size: 46, weight: 500 },
+    { text: 'Show it. Say it. Done.', size: 46, color: gray, gap: 44 },
+    { text: 'Built with Meta’s Muse models', size: 38, color: gray },
+    { text: 'github.com/enfp-dev-studio/this-and-that', size: 38, color: gray },
+  ],
+  6,
+);
 
 // ---------- concat ----------
 
