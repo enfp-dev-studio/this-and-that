@@ -100,6 +100,17 @@ export async function toWav(inPath: string, outPath: string) {
   return outPath;
 }
 
+// Peak level in dB (0 = full scale): speech peaks near -3 dB, a quiet room near -50.
+export async function maxVolumeDb(path: string) {
+  return new Promise<number>((resolve, reject) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-i', path, '-af', 'volumedetect', '-f', 'null', '-']);
+    let out = '';
+    p.stderr.on('data', (d) => (out += d));
+    p.on('error', reject);
+    p.on('close', () => resolve(Number(/max_volume: (-?[\d.]+) dB/.exec(out)?.[1] ?? -Infinity)));
+  });
+}
+
 export async function audioDurationMs(path: string) {
   return new Promise<number>((resolve, reject) => {
     const p = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path]);

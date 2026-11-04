@@ -19,7 +19,7 @@ import { editImage, transcribe, type Mask, type Turn } from './meta.ts';
 import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
-import { audioDurationMs, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
+import { audioDurationMs, maxVolumeDb, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -161,6 +161,9 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     writeFileSync(join(dir, 'voice.webm'), audioBuf);
     wavPath = await T('to wav', () => toWav(join(dir, 'voice.webm'), join(dir, 'voice.wav')));
   }
+  // No voice, no edit. From a silent video Spark invents a request ("remove
+  // the lamp, make the cat bigger"), and Voice Transcribe hears "Yeah".
+  if (!prior?.edits && (!wavPath || (await maxVolumeDb(wavPath)) < -40)) throw new Error('no speech');
   // The realtime transcript (streamed while talking) if it arrives, else batch.
   const keywords = keywordsFor([img, ...refs.marks.map((m) => m.ref), ...refs.pinned]);
   const batch = () => T('transcribe', () => transcribe(readFileSync(wavPath!), trace, keywords)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null));

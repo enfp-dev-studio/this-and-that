@@ -641,7 +641,7 @@ class Editor {
       }
     } catch (err) {
       this.recorder = null;
-      this.onNotice(`Microphone unavailable (${(err as Error).message}). Marks only.`);
+      this.onNotice(`Microphone unavailable (${(err as Error).message}). Allow it to say what to change.`);
     }
   }
 

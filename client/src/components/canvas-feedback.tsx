@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CloudOff, Loader2, Mic, RotateCcw, Zap } from 'lucide-react';
+import { CloudOff, Loader2, Mic, MicOff, RotateCcw, Zap } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
@@ -35,9 +35,18 @@ export function StatusChip() {
 
 // An edit that didn't come through (a model timed out or refused, even after
 // a retry): a calm word, the marks still on the picture, one tap to resend.
+// Nothing heard is different: sending the same silence again wouldn't help.
 export function FailNotice() {
   const s = useEditor();
   if (!s.failure || s.mode !== 'idle') return null;
+  if (s.failure === 'no speech') {
+    return (
+      <Badge variant="secondary" role="alert" className="absolute top-4 left-1/2 -translate-x-1/2 shadow-lg">
+        <MicOff />
+        Didn’t hear anything · talk while you draw
+      </Badge>
+    );
+  }
   const text = (
     <span className="flex items-center gap-2 text-sm text-muted-foreground">
       <CloudOff />
