@@ -19,6 +19,7 @@ import { countJob, limits, ProxyError } from '../runtime/meta';
 import { put } from '../runtime/store';
 import { runtime } from '../runtime';
 import { SurfaceBaker } from '../surface/bake';
+import * as reshape from './reshape';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
 export type Snapshot3D = {
@@ -54,7 +55,8 @@ class Engine3D {
   private importedPart: Part | null = null;
   // Surface edits on the opened model: the 2D pipeline on the view, baked into its textures.
   private baker: SurfaceBaker | null = null;
-  private surfaceEdits = 0;
+  // Changes made to the opened model itself (texture bakes, reshapes): undone last first.
+  private modelUndos: (() => void)[] = [];
   private stage: Stage | null = null;
   private sketch!: Sketch;
   private builder!: Builder;
@@ -263,6 +265,7 @@ class Engine3D {
   // it, or "add … here", make parts that follow them.
   private surfaceRoute(strokes: Stroke[], transcript: string) {
     if (!this.imported || !strokes.length || !strokes.every((s) => s.plane === 'surface')) return false;
+    if (reshape.opFromWords(transcript)) return false; // reshaping the model itself (longer, curved, a gem), not its texture
     return !/^\s*(add|attach|put|give|grow|stick|place)\b/i.test(transcript) && !/\b(horns?|wings?|tail|spikes?|handle|guard)\b/i.test(transcript);
   }
 
@@ -316,7 +319,7 @@ class Engine3D {
       const rendered = runtime.bitmap(imageId), edited = runtime.bitmap(job.resultImageId!);
       if (!rendered || !edited) throw new Error('the edited view is missing');
       this.baker.bake(cam, rendered, plain, edited);
-      this.surfaceEdits++;
+      this.modelUndos.push(() => this.baker?.undo());
       while (this.sketch.current().length) this.sketch.undo();
       const ms = performance.now() - t0;
       const said = job.edits?.map((e) => e.instruction).join('; ') || transcript;
@@ -358,7 +361,7 @@ class Engine3D {
     this.imported = null;
     this.importedPart = null;
     this.baker = null;
-    this.surfaceEdits = 0;
+    this.modelUndos = [];
     this.builds.length = 0;
     this.redos = [];
     this.sketch.round = 1;
@@ -442,7 +445,7 @@ class Engine3D {
       const snapped = !!last.raw;
       this.sketch.undo();
       if (!snapped) this.redos.push({ kind: 'stroke', stroke: last });
-    } else if (this.surfaceEdits && this.baker?.undo()) this.surfaceEdits--;
+    } else if (this.modelUndos.length) this.modelUndos.pop()!();
     else this.undoBuild();
     this.sync();
   }
@@ -511,6 +514,8 @@ class Engine3D {
     if (this.surfaceRoute(editing ? sketch.current() : sketch.strokes, transcript)) return this.surfaceEdit(sketch.current(), transcript);
     // The opened model goes in as a part Spark keeps (the builder never draws it).
     const current = this.importedPart && !builder.parts.some((p) => p.primitive === 'mesh') ? [this.importedPart, ...builder.parts] : builder.parts;
+    // Reshaping the opened model itself ("make the blade this long", "curve it like a katana", "set a gem here").
+    const reshaping = this.imported ? reshape.opFromWords(transcript) : null;
     const strokes = editing ? sketch.current() : sketch.strokes;
     if (!strokes.length && !(editing && transcript)) return this.onNotice('Draw something first, then talk or type.');
     this.busy = true;
@@ -543,12 +548,31 @@ class Engine3D {
         if (ev.type === 'say') said = ev.say;
         if (ev.type === 'part') {
           got.push(ev.part as Part);
-          builder.apply(this.onSurface(got, current, transcript), sketch.strokes, true);
+          if (!reshaping) builder.apply(this.onSurface(got, current, transcript), sketch.strokes, true);
           this.status(`Building · ${got.length} ${got.length === 1 ? 'part' : 'parts'}`, true);
         }
       });
       const a = r.answer;
       this.subject = a.subject;
+      // The operation Spark chose (else the one the words name); the geometry from the strokes.
+      const edit = this.imported ? (a.edits?.[0] ?? (reshaping ? { op: reshaping, segment: 'blade', strokes: [], color: '' } : null)) : null;
+      if (edit && this.imported) {
+        const model = this.imported;
+        const marks = strokes.map((s) => s.points);
+        const one = marks.reduce((x, y) => (y.length > x.length ? y : x), marks[0] ?? []);
+        const undo =
+          edit.op === 'lengthen' ? reshape.lengthen(model, one)
+          : edit.op === 'thin' ? reshape.thin(model, marks)
+          : edit.op === 'curve' ? reshape.curve(model, one)
+          : reshape.gem(model, one, /^#[0-9a-f]{6}$/i.test(edit.color) ? edit.color : undefined);
+        if (!undo) throw new Error(`the strokes don’t give a ${edit.op}`);
+        this.modelUndos.push(undo);
+        this.set({ result: { say: a.say || transcript, parts: [], ms: r.ms } });
+        sketch.settle();
+        this.status(`${{ lengthen: 'Lengthened', thin: 'Thinned', curve: 'Curved', gem: 'Gem set' }[edit.op as reshape.ReshapeOp]} · ${(r.ms / 1000).toFixed(1)} s`);
+        (window as any).lastReshape = { op: edit.op, ms: r.ms };
+        return;
+      }
       this.builds.push({ parts: before, transcript });
       a.parts = this.onSurface(a.parts as Part[], current, transcript);
       builder.apply(a.parts as Part[], sketch.strokes);

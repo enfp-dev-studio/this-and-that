@@ -38,15 +38,31 @@ export type Part = {
   tongues?: number[][]; // flame: [y0, y1, tipX, tipY] per tongue, in the part's frame (x out of the edge, y along it)
   thickness?: number; // flame: tongue thickness; guard: section height
 };
-export type Answer = { subject: string; say: string; parts: Part[] };
+// `edits`: reshaping an opened model itself (the geometry comes from the strokes, in the app).
+export type Edit = { op: 'lengthen' | 'thin' | 'curve' | 'gem'; segment: 'blade' | 'guard' | 'grip' | 'pommel'; strokes: number[]; color: string };
+export type Answer = { subject: string; say: string; parts: Part[]; edits?: Edit[] };
 
 const vec3 = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['subject', 'say', 'parts'],
+  required: ['subject', 'say', 'parts', 'edits'],
   properties: {
     subject: { type: 'string' },
+    edits: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['op', 'segment', 'strokes', 'color'],
+        properties: {
+          op: { type: 'string', enum: ['lengthen', 'thin', 'curve', 'gem'] },
+          segment: { type: 'string', enum: ['blade', 'guard', 'grip', 'pommel'] },
+          strokes: { type: 'array', items: { type: 'integer' } },
+          color: { type: 'string' },
+        },
+      },
+    },
     say: { type: 'string' },
     parts: {
       type: 'array',
@@ -95,6 +111,7 @@ Parts:
 - Follow the drawing: lines drawn as separate posts, legs or rails become separate thin parts; a closed outline becomes a panel or slab. Anything the user names (roof, backrest, handle, door) gets its own part, so it can be colored and edited.
 - Complete what a real object of that kind needs even if only one side was drawn (the hidden legs of a chair, mirrored), but keep it simple: 3 to 16 parts. Parts should touch where they connect; nothing floats and nothing is left open (a gable roof needs its triangular gable ends: an extrude of the outline stroke, or a box rotated 45° about the ridge axis).
 - Editing: return the full updated list. Keep unchanged parts exactly as they were (same name, same numbers). "this" / "here" / "이거" / "여기" means the part or place the new strokes touch.
+- Reshaping an opened model (a mesh part) itself goes in edits, not parts: "make the blade this long" (lengthen: a line from the tip outward), "make it a thin rapier" (thin: two lines along the blade), "curve it like this, like a katana" (curve: an arc along the blade), "set a gem here" (gem: a small circle; color = the gem's #rrggbb, else ""). segment = the part of the model the strokes are on (blade, guard, grip or pommel); strokes = their ids. Then parts is the current list unchanged. edits = [] otherwise.
 - A stroke that draws a shape ("like this", "this shape", an outline or curve) gives that part its geometry, which the app takes from the stroke; a tap or a loose circle only says where. Either way, say which part each stroke makes (strokes) and its kind (primitive), attachment and pair. Design a clean, well-proportioned part of the kind asked for, attached to the model there. Add as many as the words mean: "horns" or "wings" on a head or body = a mirrored pair, even if one side was drawn; never duplicates.
 
 subject: what it is, a few English words. say: one short, friendly Korean sentence about what you made or changed.
