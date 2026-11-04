@@ -2,20 +2,23 @@
 // (captions are added in editing) into out/demo/<scene>.mp4. Drives the real
 // app on BASE (default :8787; dark theme, no ?lab) in Chrome via Playwright:
 // pen events at a human pace (the strokes are what you see), a synthetic
-// Korean voice (say -v Yuna) fed to the app as its microphone, a small dot
+// English voice (say -v Samantha; VOICE= picks another) fed to the app as its
+// microphone and written beside each clip for the edit, a small dot
 // following the pen, and the screen recorded with Chrome's screencast, then
 // encoded with ffmpeg at 30 fps. Waits are kept in full (sped up in editing).
 //
 //   node --env-file=.env scripts/capture-demo.ts [scene …]
-//   scenes: hook macaron brooch cuff three hold chair (default: all; hold follows three)
+//   scenes: hook macaron three hold chair (default), also brooch cuff; hold follows three
+//   Each take also writes out/demo/<scene>.timing.json (when its voice starts, the
+//   request goes out and the result comes back, and what is said when) for edit-demo.ts.
 //   HEADED=1 shows the browser window.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type CDPSession, type Page } from 'playwright-core';
-import { buildClip, locate } from '../m0/clipkit.ts';
-import type { Point, Stroke } from '../server/render.ts';
+import { locate, strokePoints } from '../m0/clipkit.ts';
+import { audioDurationMs, type Point, type Stroke } from '../server/render.ts';
 
 const BASE = process.env.BASE ?? 'http://localhost:8787';
 const W = 1600, H = 1000;
@@ -24,6 +27,7 @@ const out = join(root, 'out', 'demo');
 const clipDir = join(out, 'clips');
 mkdirSync(clipDir, { recursive: true });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+const VOICE = process.env.VOICE ?? 'Samantha';
 const log = (...a: unknown[]) => console.log(`[${new Date().toTimeString().slice(0, 8)}]`, ...a);
 
 // ---------- the scenes ----------
@@ -35,48 +39,75 @@ const sample = (p: string) => join(root, 'samples', p);
 // The pauldron's new outline (as in scripts/bench-sketch.ts): three spikes over the old dome.
 const SPIKES = [[280, 640], [330, 470], [380, 560], [430, 395], [480, 530], [530, 440], [575, 600]];
 
+// One line per mark, said while it is drawn ("this" at the moment of the stroke).
 const SCENES: Record<string, Scene> = {
-  // "어깨 갑옷" rather than the rarer "어깨갑주": the synthetic voice's 갑주 was once heard as "가수".
-  hook: { image: sample('illust/armor.jpg'), marks: [{ say: '이 어깨 갑옷, 이렇게 뾰족하게 바꿔 줘.', shape: 'contour', box: [280, 395, 575, 640] }] },
-  macaron: { image: join(root, 'out', 'bench-hard', 'grid', 'original.png'), marks: [{ say: '이거 초콜릿으로.', shape: 'tap', box: [1140, 668, 1305, 885] }] },
+  hook: { image: sample('illust/armor.jpg'), marks: [{ say: 'Make this pauldron spiky, like this.', shape: 'contour', box: [280, 395, 575, 640] }] },
+  macaron: { image: join(root, 'out', 'bench-hard', 'grid', 'original.png'), marks: [{ say: 'Make this one chocolate.', shape: 'tap', box: [1140, 668, 1305, 885] }] },
   brooch: {
     image: sample('illust/armor.jpg'),
     ref: sample('tasks/ref-rose-brooch.jpg'),
     marks: [
-      { say: '이 브로치를', object: 'the jewel brooch at her collar', shape: 'circle' },
-      { say: '저거처럼 바꿔 줘.', object: 'the rose brooch ornament', shape: 'circle', on: 'ref' },
+      { say: 'Change this brooch', object: 'the jewel brooch at her collar', shape: 'circle' },
+      { say: 'to look like that.', object: 'the rose brooch ornament', shape: 'circle', on: 'ref' },
     ],
   },
   cuff: {
     image: sample('tasks/gothic-cuff.jpg'),
     marks: [
-      { say: '이쪽 레이스를', object: 'the sleeve cuff with a plain zigzag trim at the lower right', shape: 'circle' },
-      { say: '저쪽이랑 똑같이.', object: 'the sleeve cuff with white rose lace near her chin', shape: 'circle' },
+      { say: 'Make this lace', object: 'the sleeve cuff with a plain zigzag trim at the lower right', shape: 'circle' },
+      { say: 'match that one.', object: 'the sleeve cuff with white rose lace near her chin', shape: 'circle' },
     ],
   },
   three: {
     image: sample('illust/keyvisual.jpg'),
     marks: [
-      // Naming it: the synthetic voice's "이건 지우고" was often heard as "이것이이고".
-      { say: '이 휴대폰은 지우고,', object: 'the smartphone in her hand', shape: 'circle' },
-      // Her chest, not the whole blazer: its box reaches the backpack beside her.
-      { say: '이건 빨갛게,', box: [1190, 720, 1540, 1080], shape: 'circle' },
-      { say: '여기에 작은 별 하나.', box: [170, 100, 290, 220], shape: 'circle' },
+      // Naming it: the synthetic "Remove this" / "Erase this" were heard as "move this" / "this".
+      { say: 'Remove this phone,', object: 'the smartphone in her hand', shape: 'circle' },
+      // The jacket's body, short of the backpack beside her (SAM then gets all of it, not a patch).
+      { say: 'make this red,', box: [1060, 650, 1620, 1260], shape: 'circle' },
+      { say: 'and add a little star here.', box: [170, 100, 290, 220], shape: 'circle' },
     ],
   },
 };
 
-// Boxes of the named things (Spark, cached), then the voice and the timed strokes (say -v Yuna).
-async function prepare(name: string, scene: Scene) {
+type Spoken = { at: number; dur: number; say: string }; // seconds into the voice track
+type Clip = { strokes: (Stroke & { on?: 'ref' })[]; speech: Spoken[] };
+
+// The voice, one phrase after another (a short pause between), and each
+// mark drawn while its phrase is said (like clipkit.buildClip, with VOICE).
+// Writes clips/<name>.wav (44.1 kHz mono): the app's microphone and the edit's sound.
+async function voiceClip(name: string, image: Buffer, marks: { say: string; box: number[] }[]) {
+  const { width: W, height: H } = await (await import('sharp')).default(image).metadata();
+  const parts: { file: string; at: number }[] = [];
+  const strokes: Stroke[] = [];
+  const speech: Spoken[] = [];
+  let at = 400;
+  for (const [i, m] of marks.entries()) {
+    const aiff = join(clipDir, `${name}-${i}.aiff`);
+    execFileSync('say', ['-v', VOICE, '-o', aiff, m.say]);
+    const d = await audioDurationMs(aiff);
+    parts.push({ file: aiff, at });
+    speech.push({ at: at / 1000, dur: d / 1000, say: m.say });
+    strokes.push({ mark: i + 1, points: strokePoints(m.box, 'circle', at + 100, at + Math.max(1300, d), W!, H!) });
+    at += Math.max(d, 1300) + 350;
+  }
+  const inputs = parts.flatMap((p) => ['-i', p.file]);
+  const filter = parts.map((p, i) => `[${i}:a]adelay=${p.at}|${p.at}[a${i}]`).join(';') + ';' + parts.map((_, i) => `[a${i}]`).join('') + `amix=inputs=${parts.length}:normalize=0[o]`;
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...inputs, '-filter_complex', filter, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, `${name}.wav`)]);
+  return { strokes, speech };
+}
+
+// Boxes of the named things (Spark, cached), then the voice and the timed strokes.
+async function prepare(name: string, scene: Scene): Promise<Clip> {
   const json = join(clipDir, `${name}.json`);
-  if (existsSync(json)) return JSON.parse(readFileSync(json, 'utf8')) as { strokes: (Stroke & { on?: 'ref' })[] };
+  if (existsSync(json)) return JSON.parse(readFileSync(json, 'utf8')) as Clip;
   const boxes = new Map<string, number[]>();
   for (const [img, marks] of [[scene.image, scene.marks.filter((m) => !m.on)], [scene.ref, scene.marks.filter((m) => m.on)]] as const) {
     const names = marks.filter((m) => m.object).map((m) => m.object!);
     if (img && names.length) for (const [k, v] of await locate(readFileSync(img), names)) boxes.set(k, v);
   }
   const box = (m: Mark) => m.box ?? boxes.get(m.object!)!;
-  const { strokes } = await buildClip(clipDir, name, readFileSync(scene.image), scene.marks.map((m) => ({ say: m.say, box: box(m), shape: 'circle' as const })));
+  const { strokes, speech } = await voiceClip(name, readFileSync(scene.image), scene.marks.map((m) => ({ say: m.say, box: box(m) })));
   const shaped = strokes.map((s, i) => {
     const m = scene.marks[i];
     const [x0, y0, x1, y1] = box(m);
@@ -94,8 +125,8 @@ async function prepare(name: string, scene: Scene) {
     }
     return { mark: s.mark, points, ...(m.on ? { on: m.on } : {}) };
   });
-  writeFileSync(json, JSON.stringify({ strokes: shaped }, null, 1));
-  return { strokes: shaped };
+  writeFileSync(json, JSON.stringify({ strokes: shaped, speech }, null, 1));
+  return { strokes: shaped, speech };
 }
 
 // ---------- recording: Chrome's screencast → mp4 ----------
@@ -139,6 +170,7 @@ class Recorder {
     rmSync(dir, { recursive: true, force: true });
     const secs = this.frames.at(-1)!.t - this.frames[0].t;
     log(`■ ${name}.mp4 (${this.frames.length} frames, ${secs.toFixed(1)} s)`);
+    return this.frames[0].t; // the clip's time zero (seconds, like Date.now() / 1000)
   }
 }
 
@@ -239,13 +271,16 @@ async function scene2d(page: Page, cdp: CDPSession, rec: Recorder, name: string)
   // Draw at the clip's timing; the voice starts with the first stroke (that is when recording starts).
   const lead = clip.strokes[0].points[0].t;
   const t0 = Date.now() - lead;
-  let audioMs = 0;
+  let audioMs = 0, voiceAt = 0;
   for (const [i, s] of clip.strokes.entries()) {
     const f = s.on === 'ref' ? ref! : target;
     const P = (p: Point) => [f.x + p.x * f.k, f.y + p.y * f.k] as const;
     await sleep(s.points[0].t - (Date.now() - t0));
     await pen('mousePressed', ...P(s.points[0]), 1);
-    if (i === 0) audioMs = await page.evaluate(([b64, off]) => (window as any).__play(b64, off), [wav, lead] as const);
+    if (i === 0) {
+      voiceAt = Date.now() / 1000 - lead / 1000; // when the voice track's time zero is, had it played from its start
+      audioMs = await page.evaluate(([b64, off]) => (window as any).__play(b64, off), [wav, lead] as const);
+    }
     for (const p of s.points.slice(1)) {
       await sleep(p.t - (Date.now() - t0));
       await pen('mouseMoved', ...P(p), 1);
@@ -261,14 +296,17 @@ async function scene2d(page: Page, cdp: CDPSession, rec: Recorder, name: string)
   await sleep(90);
   await page.mouse.up();
   const t1 = Date.now();
+  const releaseAt = t1 / 1000;
   const outcome = await Promise.race([
     page.waitForSelector('button:has-text("Keep")', { timeout: 150_000 }).then(() => 'result'),
     page.waitForSelector('text=That edit didn’t come through', { timeout: 150_000 }).then(() => 'failed'),
     page.waitForSelector('text=Didn’t hear anything', { timeout: 150_000 }).then(() => 'no speech'),
   ]).catch(() => 'timeout');
+  const resultAt = Date.now() / 1000;
   log(`${name}: ${outcome} ${((Date.now() - t1) / 1000).toFixed(1)} s after release`);
   await sleep(3500);
-  await rec.stop(name);
+  const zero = await rec.stop(name);
+  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: releaseAt - zero, result: resultAt - zero, speech: clip.speech }, null, 1));
   return outcome;
 }
 
@@ -297,21 +335,31 @@ async function sceneChair(page: Page, rec: Recorder) {
   await page.locator('[role=radio][aria-label="3D"]').click();
   await page.waitForFunction(() => !!(window as any).replayChair && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
   await sleep(1500);
+  // The voice for the edit: the first line while the front is drawn, the second
+  // with the side (replayChair settles 0.75 s per view, ~2.9 s of front strokes).
+  const lines = [{ say: 'It’s a chair.', at: 0.85 }, { say: 'The back goes like this.', at: 4.45 }];
+  for (const [i, l] of lines.entries()) execFileSync('say', ['-v', VOICE, '-o', join(clipDir, `chair-${i}.aiff`), l.say.replace('’', "'")]);
+  const speech: Spoken[] = [];
+  for (const [i, l] of lines.entries()) speech.push({ at: l.at, dur: (await audioDurationMs(join(clipDir, `chair-${i}.aiff`))) / 1000, say: l.say });
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...lines.flatMap((_, i) => ['-i', join(clipDir, `chair-${i}.aiff`)]), '-filter_complex', `${lines.map((l, i) => `[${i}:a]adelay=${Math.round(l.at * 1000)}|${Math.round(l.at * 1000)}[a${i}]`).join(';')};[a0][a1]amix=inputs=2:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'chair.wav')]);
   await rec.start('chair');
   await sleep(1000);
   const t1 = Date.now();
-  await page.evaluate(() => (window as any).replayChair('의자야, 등받이는 이렇게').then(() => ((window as any).__built = true)));
+  const voiceAt = t1 / 1000;
+  await page.evaluate(() => (window as any).replayChair('It’s a chair, the back goes like this.').then(() => ((window as any).__built = true)));
   const ok = await page.waitForFunction(() => (window as any).__built === true, undefined, { timeout: 150_000 }).then(() => true, () => false);
   const parts = await page.evaluate(() => (window as any).builder?.parts?.length ?? 0);
   log(`chair: ${ok ? `${parts} parts` : 'timeout'} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+  const builtAt = Date.now() / 1000;
   await sleep(9000); // the model turns slowly after it is built
-  await rec.stop('chair');
+  const zero = await rec.stop('chair');
+  writeFileSync(join(out, 'chair.timing.json'), JSON.stringify({ voice: join(clipDir, 'chair.wav'), voiceAt: voiceAt - zero, release: 11 - 0, result: builtAt - zero, speech }, null, 1));
   return ok && parts ? 'result' : 'failed';
 }
 
 // ---------- run ----------
 
-const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'brooch', 'cuff', 'three', 'hold', 'chair'];
+const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hook', 'macaron', 'three', 'hold', 'chair'];
 const browser = await chromium.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: !process.env.HEADED,
