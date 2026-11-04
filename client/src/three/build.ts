@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import type { Stage } from './scene';
 import type { Stroke } from './sketch';
 import { fixRotation } from './fit';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 export type Part = {
   name: string;
@@ -101,8 +102,22 @@ function taperedTube(path: number[][], base: number, tip: number) {
   return g;
 }
 
-// A wing or fin: the outline as a thin sheet, cupped a little along its span.
+// A wing or fin: the outline as a thin sheet, cupped a little along its span,
+// with ribs from the root to its 3 or 4 outermost tips.
 function membrane(outline: number[][], thickness: number) {
+  const sheet = membraneSheet(outline, thickness);
+  const span = Math.max(0.05, ...outline.map(([x, y]) => Math.hypot(x, y)));
+  const d = outline.map(([x, y]) => Math.hypot(x, y));
+  // Tips: points farther from the root than both neighbours, the farthest first.
+  const tips = outline.map((p, i) => ({ p, d: d[i], peak: d[i] >= d[(i + outline.length - 1) % outline.length] && d[i] >= d[(i + 1) % outline.length] })).filter((t) => t.peak && t.d > 0.35 * span).sort((a, b) => b.d - a.d).slice(0, 4);
+  const ribs = tips.map(({ p: [x, y] }) => {
+    const bend = (k: number) => [x * k, y * k + 0.06 * Math.hypot(x, y) * Math.sin(Math.PI * k), -0.12 * span * Math.pow((x * k) / span, 2)];
+    return taperedTube([0, 0.33, 0.66, 1].map(bend), 0.035 * span, 0.008 * span).toNonIndexed();
+  });
+  return ribs.length ? mergeGeometries([sheet, ...ribs]) ?? sheet : sheet;
+}
+
+function membraneSheet(outline: number[][], thickness: number) {
   const shape = new THREE.Shape(outline.map(([x, y]) => new THREE.Vector2(x, y)));
   const g = new THREE.ExtrudeGeometry(shape, { depth: Math.max(0.004, thickness), bevelEnabled: false, curveSegments: 4 });
   g.translate(0, 0, -Math.max(0.004, thickness) / 2);

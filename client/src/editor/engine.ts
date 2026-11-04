@@ -195,6 +195,8 @@ class Editor {
 
   constructor() {
     runtime.lastSession().then((last) => last && this.snapshot.mode === 'empty' && this.set({ resumable: true }), () => {});
+    // For scripts (the demo capture reads the result picture), like the 3D mode's window.stage.
+    if (typeof window !== 'undefined') Object.assign(window, { editor: this });
   }
 
   // Back to the picture, its history and references from the last visit

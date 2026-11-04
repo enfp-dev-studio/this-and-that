@@ -186,8 +186,17 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
     if (n >= max) return log(`[fit] dropped ${p.name}: already ${n} ${r}`), null;
     perRole.set(r, n + 1);
     // The side not drawn of a pair: as Spark had it for now; `all` mirrors the drawn one onto it.
-    if (!fresh && /left|right/i.test(p.name) && strokes.length) return p;
-    return place(p);
+    if (!fresh && /left|right/i.test(p.name) && strokes.length) return taper(p);
+    return taper(place(p));
+  };
+
+  // A horn: thick at the base (at least an eighth of its length across), tapering to a near point.
+  const taper = (p: P): P => {
+    if (p.primitive !== 'tube' || (p.path?.length ?? 0) < 2) return p;
+    const len = p.path!.slice(1).reduce((s, q, i) => s + Math.hypot(...sub(q, p.path![i])), 0);
+    const base = Math.min(0.2 * len, Math.max(Math.abs(p.radii?.[0] ?? 0), 0.07 * len));
+    const tip = Math.min(Math.abs(p.radii?.[1] ?? 0), 0.3 * base);
+    return { ...p, radii: [r3(base), r3(Math.max(0.002, tip))] };
   };
 
   const all = (parts: P[]): P[] => {
@@ -202,6 +211,18 @@ export function partHolder<P extends FitPart>(prev: FitPart[], strokes: FitStrok
       const drawn = out.find((o) => o !== p && !oldNames.has(o.name) && role(o.name) === role(p.name) && o.strokes.some((id) => byId.has(id)));
       return drawn ? (log(`[fit] ${p.name}: mirror of ${drawn.name}`), mirror(drawn, p.name)) : p;
     });
+    // A drawn pair of horns or wings: exactly symmetric, the left one's shape on
+    // both, at the average of where the two were drawn.
+    for (const l of out.filter((p) => !oldNames.has(p.name) && /left/i.test(p.name) && shapePoints(p))) {
+      const ri = out.findIndex((p) => p !== l && !oldNames.has(p.name) && /right/i.test(p.name) && role(p.name) === role(l.name));
+      if (ri < 0) continue;
+      const r = out[ri];
+      const dx = (Math.abs(l.center[0] - mid0) + Math.abs(r.center[0] - mid0)) / 2;
+      const left = { ...l, center: [r3(mid0 + Math.sign(l.center[0] - mid0 || -1) * dx), r3((l.center[1] + r.center[1]) / 2), r3((l.center[2] + r.center[2]) / 2)] };
+      out[out.indexOf(l)] = left;
+      out[ri] = mirror(left, r.name);
+      log(`[fit] ${l.name} / ${r.name}: made symmetric`);
+    }
     // "Armrests" with one side back: the twin, mirrored across the model's middle.
     for (const [r, n] of perRole) {
       if (n !== 1 || counted || !plural(r)) continue;
