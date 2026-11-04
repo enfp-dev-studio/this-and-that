@@ -267,6 +267,12 @@ export class Sketch {
     this.round++;
   }
 
+  // Undo a build: its strokes become current (and fully visible) again.
+  unsettle() {
+    this.round = Math.max(1, this.round - 1);
+    for (const s of this.strokes) if (s.round === this.round) (s.line.material as LineMaterial).opacity = 1;
+  }
+
   undo() {
     const s = this.strokes.pop();
     if (!s) return false;

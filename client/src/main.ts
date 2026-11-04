@@ -29,10 +29,11 @@ document.querySelectorAll<HTMLButtonElement>('#planes button').forEach((b) =>
     document.querySelectorAll('#planes button').forEach((x) => x.classList.toggle('on', x === b));
   }),
 );
-$('undo').addEventListener('click', () => sketch.undo());
+$('undo').addEventListener('click', () => undo());
 $('clear').addEventListener('click', () => {
   sketch.clear();
   builder.clear();
+  builds.length = 0;
   sketch.round = 1;
   $('result').hidden = true;
   $('strip').innerHTML = '';
@@ -95,7 +96,7 @@ addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'Space' && !e.repeat) (e.preventDefault(), startTalk());
-  if ((e.metaKey || e.ctrlKey) && e.key === 'z') sketch.undo();
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z') undo();
   if (e.key === 'Enter') make();
 });
 addEventListener('keyup', (e) => {
@@ -115,6 +116,30 @@ function make() {
   if (text) caption.textContent = `“${text}”`;
   perceive(text);
 }
+
+// ── undo: strokes of this round first, then whole builds ───────────────────
+const builds: { parts: Part[]; transcript: string }[] = [];
+function undoBuild() {
+  const b = builds.pop();
+  if (!b) return null;
+  if (b.parts.length) builder.apply(b.parts, sketch.strokes);
+  else builder.clear();
+  sketch.unsettle();
+  stage.controls.autoRotate = false;
+  $('result').hidden = true;
+  return b;
+}
+function undo() {
+  if (busy) return;
+  if (sketch.current().length) sketch.undo();
+  else undoBuild();
+}
+// Same strokes and words, a fresh answer.
+$('reroll').addEventListener('click', () => {
+  if (busy) return;
+  const b = undoBuild();
+  if (b) perceive(b.transcript);
+});
 
 // ── perceive → build ───────────────────────────────────────────────────────
 function strokeInfo(s: Stroke) {
@@ -145,6 +170,7 @@ async function perceive(transcript: string) {
     return;
   }
   busy = true;
+  const before = builder.parts;
   status('Muse Spark가 여러 방향에서 스케치를 보는 중…', true);
   const views = renderViews(stage, strokes, { withModel: editing });
   showStrip(views, true);
@@ -178,6 +204,7 @@ async function perceive(transcript: string) {
         if (ev.type === 'error') throw new Error(ev.error);
         if (ev.type === 'done') {
           const a = ev.answer;
+          builds.push({ parts: before, transcript });
           builder.apply(a.parts, sketch.strokes);
           sketch.settle();
           stage.controls.autoRotateSpeed = 1.6;
