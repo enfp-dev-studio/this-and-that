@@ -61,3 +61,13 @@ export const TASKS: Task[] = [
     type: 'Her hand holding the phone has six fingers; fix it to a natural hand with five fingers, keeping the same pose.',
   },
 ];
+
+// Pictures to try the app on (all made with Muse Image). The first is the default.
+export const SAMPLES = [
+  { title: 'Armor knight', url: sample('illust/armor.jpg') },
+  { title: 'Gothic lolita', url: sample('illust/gothic.jpg') },
+  { title: 'Key visual', url: sample('illust/keyvisual.jpg') },
+  { title: 'Gothic, mismatched cuff', url: sample('tasks/gothic-cuff.jpg') },
+  { title: 'Key visual, six-finger hand', url: sample('tasks/keyvisual-hand.jpg') },
+  { title: 'Desk with cat', url: '/api/sample' },
+];

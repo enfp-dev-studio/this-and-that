@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { ImageIcon, Upload } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Toolbar } from '@/components/toolbar';
+import { TrySample } from '@/components/sample-menu';
 
 // The image on a quiet dotted backdrop. The canvas draws the image, marks,
 // SAM outlines and sheen; the before/after overlay sits exactly over it.
@@ -70,10 +71,7 @@ export function Stage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex gap-2">
-              <Button size="touch" className="flex-1" onClick={() => editor.open('/api/sample')}>
-                <ImageIcon />
-                Try the sample
-              </Button>
+              <TrySample />
               <Button size="touch" variant="outline" className="flex-1" asChild>
                 <label>
                   <Upload />

@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Columns2, FlaskConical, ImageIcon, Moon, PanelRight, Redo2, Sun, Undo2, Upload } from 'lucide-react';
+import { Columns2, FlaskConical, Moon, PanelRight, Redo2, Sun, Undo2, Upload } from 'lucide-react';
 import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { useTheme } from '@/components/theme-provider';
@@ -10,6 +10,7 @@ import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SidePanel } from '@/components/side-panel';
 import { TasksMenu } from '@/components/tasks';
+import { SampleMenu } from '@/components/sample-menu';
 
 function IconButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
@@ -72,10 +73,7 @@ export function TopBar() {
           <Upload />
           Open
         </Button>
-        <Button variant="ghost" size="touch" onClick={() => editor.open('/api/sample')} disabled={busy}>
-          <ImageIcon />
-          Sample
-        </Button>
+        <SampleMenu disabled={busy} />
         <IconButton label={theme === 'dark' ? 'Light theme' : 'Dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
           {theme === 'dark' ? <Sun /> : <Moon />}
         </IconButton>
