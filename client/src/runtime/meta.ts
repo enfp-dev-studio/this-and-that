@@ -198,7 +198,25 @@ export async function sparkJson<T>(opts: { content: any[]; schema: object; model
 // race, the first to start writing its answer wins and the others are
 // cancelled (Spark's thinking time varies 2-3x between identical calls).
 // `onText` gets the answer so far.
-export async function sparkStream(opts: { system: string; content: any[]; schema: object; model?: string; effort?: string; copies?: number; timeoutMs?: number; onText?: (text: string) => void }): Promise<{ text: string; usage: any; firstMs: number }> {
+type SparkStreamOpts = { system: string; content: any[]; schema: object; model?: string; effort?: string; copies?: number; timeoutMs?: number; onText?: (text: string) => void };
+
+// Through the Cloudflare Worker, muse-spark-1.2 can answer model_not_found
+// (seen on 2026-11-05 while 1.3 worked); fall back to 1.3 rather than fail.
+// Once it has, the rest of the page's builds go to 1.3 straight away.
+let spark3dMissing = false;
+export async function sparkStream(opts: SparkStreamOpts): Promise<{ text: string; usage: any; firstMs: number }> {
+  const model = opts.model ?? MODELS.spark3d;
+  if (spark3dMissing && model === MODELS.spark3d) return sparkStreamOnce({ ...opts, model: MODELS.spark });
+  try {
+    return await sparkStreamOnce(opts);
+  } catch (e) {
+    if (model === MODELS.spark || !/model_not_found/.test(String((e as Error)?.message))) throw e;
+    spark3dMissing = true;
+    return sparkStreamOnce({ ...opts, model: MODELS.spark });
+  }
+}
+
+async function sparkStreamOnce(opts: SparkStreamOpts): Promise<{ text: string; usage: any; firstMs: number }> {
   const body = {
     model: opts.model ?? MODELS.spark3d,
     ...(opts.effort ? { reasoning_effort: opts.effort } : {}),

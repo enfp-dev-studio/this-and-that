@@ -1,6 +1,6 @@
 # Browser runtime (Cloudflare build)
 
-On the `browser-runtime` branch the whole app runs in the browser: the static build goes on Cloudflare Pages, and one stateless Worker (`worker/`) adds the Meta API key, checks a demo passcode and caps the cost. There is no server state. How to deploy it: [deploy-cloudflare.md](deploy-cloudflare.md).
+On the `browser-runtime` branch the whole app runs in the browser: the static build is served by a static-assets Worker (`web/`, https://this-and-that.enfpdev.workers.dev), and one stateless Worker (`worker/`, https://this-and-that-api.enfpdev.workers.dev) adds the Meta API key, checks the optional passcode and caps the cost. There is no server state. How to deploy it: [deploy-cloudflare.md](deploy-cloudflare.md).
 
 ## What moved where
 

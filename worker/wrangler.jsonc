@@ -21,7 +21,7 @@
   "vars": {
     // Comma-separated. One `*` may stand for a subdomain label (Pages preview deploys).
     // The localhost entries are for local dev (Vite on :5191).
-    "ALLOWED_ORIGINS": "https://this-and-that.pages.dev,https://*.this-and-that.pages.dev,http://localhost:5191,http://127.0.0.1:5191",
+    "ALLOWED_ORIGINS": "https://this-and-that.enfpdev.workers.dev,https://this-and-that.pages.dev,https://*.this-and-that.pages.dev,http://localhost:5191,http://127.0.0.1:5191",
     // Takes (2D edit, whole edit, 3D build, paint) per UTC day, for everyone together.
     "JOBS_PER_DAY": "500",
     // Backstop: model requests + realtime sessions per UTC day, for everyone together.

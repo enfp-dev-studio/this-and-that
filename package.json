@@ -11,9 +11,10 @@
     "start": "vite build && node --env-file-if-exists=.env server/index.ts",
     "dev:web": "vite",
     "worker:dev": "wrangler dev --config worker/wrangler.jsonc --port 8801",
-    "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
+    "worker:deploy": "cd worker && wrangler deploy",
     "check:types": "tsc -p tsconfig.json && tsc -p worker/tsconfig.json",
-    "build:pages": "node -e \"if(!/^https:\\/\\//.test(process.env.VITE_API_BASE||''))throw new Error('Set VITE_API_BASE to the Worker URL, e.g. VITE_API_BASE=https://this-and-that-api.<sub>.workers.dev')\" && vite build"
+    "build:web": "node -e \"if(!/^https:\\/\\//.test(process.env.VITE_API_BASE||''))throw new Error('Set VITE_API_BASE to the Worker URL, e.g. VITE_API_BASE=https://this-and-that-api.<sub>.workers.dev')\" && vite build",
+    "web:deploy": "cd web && wrangler deploy"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",

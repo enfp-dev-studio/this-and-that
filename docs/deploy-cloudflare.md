@@ -4,8 +4,10 @@
 
 | Piece | Where | What it does |
 | --- | --- | --- |
-| Client | Cloudflare Pages project `this-and-that` → `https://this-and-that.pages.dev` | The static build of `client/` (`npm run build` → `dist/`). All app logic runs in the browser. |
-| API proxy | Cloudflare Worker `this-and-that-api` → `https://this-and-that-api.<sub>.workers.dev` | Adds the Meta API key, checks inputs and quotas, and streams responses back. Nothing else. |
+| Web app | Static-assets Worker `this-and-that` (`web/wrangler.jsonc`) → **https://this-and-that.enfpdev.workers.dev** | The static build of `client/` (`npm run build:web` → `dist/`), no code. All app logic runs in the browser. |
+| API proxy | Worker `this-and-that-api` (`worker/wrangler.jsonc`) → **https://this-and-that-api.enfpdev.workers.dev** | Adds the Meta API key, checks inputs and quotas, and streams responses back. Nothing else. |
+
+The web app was meant for Cloudflare Pages, but `wrangler pages deploy` (4.157) failed with "Missing entry-point", so it is a Worker with static assets instead, on the same workers.dev subdomain.
 
 The Meta API key exists only as a Worker secret. The browser never receives it.
 
@@ -38,47 +40,48 @@ The counters live in one SQLite-backed Durable Object (`Limiter`, a single globa
 
 ## Deploy in one command
 
-`scripts/deploy-cloudflare.sh` runs the steps below in order: deploys the Worker, pipes `MODEL_API_KEY` (from `../this-and-that/.env`, or `ENV_FILE=…`) and `DEMO_PASSCODE` (from the git-ignored `.deploy-notes.txt`, if it has a `DEMO_PASSCODE=` line) to `wrangler secret put` through stdin without printing them, builds the client with the Worker URL, creates the Pages project if needed and deploys it. Then `node scripts/smoke-cloudflare.mjs <worker url> <pages url>` checks the result with one tiny Spark call and one realtime session (no jobs counted): the app and samples are served, CORS, the passcode (refused without, accepted with), Spark and the realtime socket through the Worker.
+`scripts/deploy-cloudflare.sh` runs the steps below in order: deploys the API Worker, pipes `MODEL_API_KEY` (from `../this-and-that/.env`, or `ENV_FILE=…`) and `DEMO_PASSCODE` (from the git-ignored `.deploy-notes.txt`, if it has a `DEMO_PASSCODE=` line) to `wrangler secret put` through stdin without printing them, builds the client with the API URL, and deploys the web app Worker. Then `node scripts/smoke-cloudflare.mjs https://this-and-that-api.enfpdev.workers.dev https://this-and-that.enfpdev.workers.dev` checks the result with one tiny Spark call and one realtime session (no jobs counted): the app and samples are served, CORS, the passcode (refused without, accepted with), Spark and the realtime socket through the Worker.
 
-## Deploy (run these yourself, from the repo root)
+## Deploy by hand (from the repo root)
 
-1. Check that Wrangler is logged in. Run `npx wrangler login` only if `whoami` fails:
-   ```sh
-   npx wrangler whoami
-   ```
-2. Store the API key (required):
-   ```sh
-   npx wrangler secret put MODEL_API_KEY --config worker/wrangler.jsonc
-   ```
-   If the Worker doesn't exist yet, Wrangler offers to create it. Answer yes.
-3. Optionally lock the demo with a passcode. For the submission it is set and given to the judges:
-   ```sh
-   npx wrangler secret put DEMO_PASSCODE --config worker/wrangler.jsonc     # lock
-   npx wrangler secret delete DEMO_PASSCODE --config worker/wrangler.jsonc  # unlock (open to everyone)
-   ```
-   Secrets take effect immediately, with no redeploy. To change the passcode, run `secret put` again.
-4. Deploy the Worker. The first deploy also creates the `Limiter` Durable Object (migration `v1`):
-   ```sh
-   npx wrangler deploy --config worker/wrangler.jsonc
-   ```
-   Note the URL it prints: `https://this-and-that-api.<sub>.workers.dev`. If the account has no workers.dev subdomain yet, Wrangler asks you to choose one.
-5. Check the Worker:
-   ```sh
-   curl https://this-and-that-api.<sub>.workers.dev/api/meta/config
-   ```
-6. Build the client with the Worker URL baked in. The client reads `import.meta.env.VITE_API_BASE`; if it is empty, the client calls `/api/meta` on its own origin:
-   ```sh
-   VITE_API_BASE=https://this-and-that-api.<sub>.workers.dev npm run build:pages
-   ```
-7. Create the Pages project (first time only), then deploy:
-   ```sh
-   npx wrangler pages project create this-and-that --production-branch main
-   npx wrangler pages deploy dist --project-name this-and-that --branch main
-   ```
-   `--branch main` makes this the production deploy at `https://this-and-that.pages.dev`. Without it, Wrangler takes the current git branch (for example `browser-runtime`) and makes a preview deploy at `https://<hash>.this-and-that.pages.dev`. Preview origins are also allowed.
-8. If Pages gave you a different URL (for example because the name was taken), add that origin to `ALLOWED_ORIGINS` in `worker/wrangler.jsonc` and repeat step 4. Requests from origins not on the list get 403.
+Each `wrangler` command runs in the folder of its config (`worker/` for the API, `web/` for the app).
 
-For later releases, repeat step 4 for Worker changes, and steps 6–7 (without `project create`) for client changes.
+1. Check that Wrangler is logged in. Run `npx wrangler@4 login` only if `whoami` fails:
+   ```sh
+   npx wrangler@4 whoami
+   ```
+2. Deploy the API Worker. The first deploy also creates the `Limiter` Durable Object (migration `v1`):
+   ```sh
+   (cd worker && npx wrangler@4 deploy)
+   ```
+   It prints `https://this-and-that-api.enfpdev.workers.dev`.
+3. Store the API key (required), piped so it never lands in the shell history:
+   ```sh
+   grep '^MODEL_API_KEY=' ../this-and-that/.env | cut -d= -f2- | tr -d '\n' | (cd worker && npx wrangler@4 secret put MODEL_API_KEY)
+   ```
+4. Optionally lock the app with a passcode. For the submission it is set (it is in `.deploy-notes.txt`, git-ignored) and given to the judges:
+   ```sh
+   grep '^DEMO_PASSCODE=' .deploy-notes.txt | cut -d= -f2- | tr -d '\n' | (cd worker && npx wrangler@4 secret put DEMO_PASSCODE)   # lock
+   (cd worker && npx wrangler@4 secret delete DEMO_PASSCODE)                                                                  # unlock (open to everyone)
+   ```
+   Secrets take effect immediately, with no redeploy.
+5. Check the API:
+   ```sh
+   curl https://this-and-that-api.enfpdev.workers.dev/api/meta/config
+   ```
+6. Build the client with the API URL baked in (`npm run build:web` refuses to build without it):
+   ```sh
+   VITE_API_BASE=https://this-and-that-api.enfpdev.workers.dev npm run build:web
+   ```
+7. Deploy the web app:
+   ```sh
+   (cd web && npx wrangler@4 deploy)
+   ```
+   It prints `https://this-and-that.enfpdev.workers.dev`. That origin is in `ALLOWED_ORIGINS` in `worker/wrangler.jsonc`; a different one (another account or name) must be added there and the API Worker deployed again (step 2), or the API answers 403.
+
+For later releases, repeat step 2 for Worker changes, and steps 6–7 for client changes.
+
+Through the deployed Worker, `muse-spark-1.2` (3D mode's model) answered `model_not_found` on 2026-11-05 while it worked from a Mac directly; the client then switches 3D builds to `muse-spark-1.3` for the rest of the page (slower to think, same answers).
 
 ## Vars
 
@@ -86,7 +89,7 @@ The vars live in `worker/wrangler.jsonc`. To change one, edit the file and redep
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `ALLOWED_ORIGINS` | Pages, Pages previews, `localhost:5191`, `127.0.0.1:5191` | Comma-separated browser origins. One `*` may stand for one subdomain label. Requests without an `Origin` header (curl) are allowed. |
+| `ALLOWED_ORIGINS` | the web app (`this-and-that.enfpdev.workers.dev`), Pages and Pages previews (unused), `localhost:5191`, `127.0.0.1:5191` | Comma-separated browser origins. One `*` may stand for one subdomain label. Requests without an `Origin` header (curl) are allowed. |
 | `JOBS_PER_DAY` | 500 | Takes per UTC day, for everyone together |
 | `REQUESTS_PER_DAY` | 10000 | Model requests plus realtime sessions per UTC day, for everyone together |
 | `MAX_IMAGE_SIDE` | 2048 | Largest `size` side on images/edits (also reported in `config`) |
