@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
-import { Armchair, Axis3d, Circle, Cuboid, Download, Eraser, Eye, EyeOff, FileUp, FolderOpen, Grid3x3, Home, Layers2, Loader2, Maximize, Mic, Paintbrush, PenLine, RectangleVertical, Redo2, RotateCcw, Undo2 } from 'lucide-react';
+import { Armchair, Axis3d, Box, Info, Circle, Cuboid, Download, Eraser, Eye, EyeOff, FileUp, FolderOpen, Grid3x3, Home, Layers2, Loader2, Maximize, Mic, Paintbrush, PenLine, RectangleVertical, Redo2, RotateCcw, Undo2 } from 'lucide-react';
 import { engine3d, type ViewName } from '@/three/engine';
 import { useEngine3D } from '@/hooks/use-engine3d';
 import { cn } from '@/lib/utils';
@@ -16,6 +16,13 @@ import { Brand, Chrome, IconButton, Inspector, ModeSwitch, type AppMode } from '
 import { BottomBar, PenModes, TalkButton, TypeToggle } from '@/components/toolbar';
 import { EmptyState } from '@/components/stage';
 import { Separator } from '@/components/ui/separator';
+
+// The Sample model: Khronos glTF Sample Assets' SciFiHelmet (samples/3d/SciFiHelmet, textures at 1024 px).
+const SAMPLE_MODEL = {
+  url: '/3d/SciFiHelmet/SciFiHelmet.gltf',
+  name: 'sci-fi helmet',
+  credit: 'Sample model: “SciFiHelmet” by Michael Pavlovic, CC0 1.0 (converted to glTF by Norbert Nopper, CC0 1.0), from the Khronos glTF Sample Assets.',
+};
 
 const VIEWS: { value: ViewName; label: string }[] = [
   { value: 'front', label: 'Front' },
@@ -210,6 +217,14 @@ function OpenSketchMenu({ disabled }: { disabled: boolean }) {
           <DropdownMenuItem onSelect={() => file.current?.click()}>
             <FileUp />
             Open file… (.glb, to sketch over)
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => engine3d.loadModel(SAMPLE_MODEL.url, SAMPLE_MODEL.name)}>
+            <Box />
+            Sample model (a sci-fi helmet to edit)
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => engine3d.onNotice(SAMPLE_MODEL.credit)}>
+            <Info />
+            Credits
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Sample sketches</DropdownMenuLabel>

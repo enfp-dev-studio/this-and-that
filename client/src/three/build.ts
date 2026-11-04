@@ -10,7 +10,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 
 export type Part = {
   name: string;
-  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane' | 'lathe';
+  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane' | 'lathe' | 'mesh';
   center: number[];
   size: number[];
   rotation: number[];
@@ -174,6 +174,7 @@ export class Builder {
     // Bottom-up, so the model grows from the ground.
     const order = [...parts].sort((a, b) => a.center[1] - b.center[1]);
     order.forEach((part, i) => {
+      if (part.primitive === 'mesh') return; // an opened model: shown as it is, not built
       const key = JSON.stringify(part);
       const old = this.built.get(part.name);
       if (old && old.key === key && !old.anim.out) {

@@ -146,3 +146,12 @@ Text-only Muse Image got every change right on the first try, so the win is not 
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+### Third-party sample model
+
+3D mode's **Open → Sample model** loads `samples/3d/SciFiHelmet/`, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
+
+> © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Michael Pavlovic for Everything
+> © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Norbert Nopper for Conversion to glTF
+
+The same credit is under **Open → Credits** in the app and on the demo video's end card.

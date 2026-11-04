@@ -48,6 +48,8 @@ class Engine3D {
   onError: (message: string) => void = () => {};
   onNotice: (message: string) => void = () => {};
   private imported: THREE.Object3D | null = null; // a .glb opened as a reference to sketch over
+  // An opened model as a part Spark edits around (kept as is, never rebuilt): set by loadModel.
+  private importedPart: Part | null = null;
   private stage: Stage | null = null;
   private sketch!: Sketch;
   private builder!: Builder;
@@ -73,7 +75,7 @@ class Engine3D {
     this.set({ status, working });
   }
   private sync() {
-    this.set({ hasModel: this.builder.parts.length > 0, hasStrokes: this.sketch.strokes.length > 0, canUndo: this.sketch.strokes.length > 0 || this.builds.length > 0, canRedo: this.redos.length > 0 });
+    this.set({ hasModel: this.builder.parts.length > 0 || !!this.imported, hasStrokes: this.sketch.strokes.length > 0, canUndo: this.sketch.strokes.length > 0 || this.builds.length > 0, canRedo: this.redos.length > 0 });
   }
 
   // The scene is made once and moved into the view each time 3D mode mounts.
@@ -90,7 +92,7 @@ class Engine3D {
       // After a build the model turns slowly until the user touches the scene.
       stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
       this.highlightOnHover(stage);
-      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), drawGuides: (view: ViewName, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
+      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), loadModel: (url: string, name?: string) => this.loadModel(url, name), drawGuides: (view: ViewName, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
     }
     return () => {};
   }
@@ -170,6 +172,63 @@ class Engine3D {
     }
   }
 
+  // A high-quality model to edit (the Sample model): sized to stand about half a
+  // metre tall on the ground, then edits are drawn on and around it; Spark sees
+  // it as one part it keeps as it is.
+  async loadModel(url: string, name = 'imported model') {
+    if (!this.stage) return;
+    try {
+      this.clear();
+      const gltf = await new GLTFLoader().loadAsync(url);
+      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const size = box.getSize(new THREE.Vector3());
+      const k = 0.5 / Math.max(size.y, 0.001);
+      gltf.scene.scale.setScalar(k);
+      gltf.scene.position.set(-((box.min.x + box.max.x) / 2) * k, -box.min.y * k + 0.02, -((box.min.z + box.max.z) / 2) * k);
+      const group = new THREE.Group();
+      group.add(gltf.scene);
+      this.imported = group;
+      this.stage.model.add(group);
+      group.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(group);
+      const c = b.getCenter(new THREE.Vector3()), sz = b.getSize(new THREE.Vector3());
+      const r3 = (v: number) => Math.round(v * 1000) / 1000;
+      this.importedPart = { name, primitive: 'mesh', center: c.toArray().map(r3), size: sz.toArray().map(r3), rotation: [0, 0, 0], color: '#808080', material: 'metal', strokes: [], profile: -1, path: [], radii: [], outline: [] };
+      this.stage.fit();
+      this.status(`${name} · draw on it and say the change`);
+      this.sync();
+    } catch (e) {
+      this.onError(`That model didn’t open: ${String(e).slice(0, 120)}`);
+    }
+  }
+
+  // A new horn or wing rooted on the opened model's surface: a ray from just
+  // outside its root toward the model's middle, the root moved to the hit.
+  private onSurface(parts: Part[], before: Part[]): Part[] {
+    const model = this.imported;
+    if (!model) return parts;
+    const meshes: THREE.Object3D[] = [];
+    model.traverse((o) => (o as THREE.Mesh).isMesh && meshes.push(o));
+    const mid = new THREE.Box3().setFromObject(model).getCenter(new THREE.Vector3());
+    const old = new Set(before.map((p) => p.name));
+    const ray = new THREE.Raycaster();
+    return parts.map((p) => {
+      if (old.has(p.name) || (p.primitive !== 'tube' && p.primitive !== 'membrane')) return p;
+      const root = new THREE.Vector3().fromArray(p.center);
+      const dir = mid.clone().sub(root).normalize();
+      ray.set(root.clone().addScaledVector(dir, -0.3), dir);
+      const hit = ray.intersectObjects(meshes, false)[0];
+      if (!hit) return p;
+      const inset = p.primitive === 'tube' ? Math.abs(p.radii?.[0] ?? 0.02) * 0.6 : 0.005;
+      const to = hit.point.clone().addScaledVector(dir, inset);
+      const shift = root.clone().sub(to);
+      const r3 = (v: number) => Math.round(v * 1000) / 1000;
+      // A tube keeps its drawn curve (only its base moves); a membrane moves whole.
+      const path = p.primitive === 'tube' && p.path ? p.path.map((q, i) => (i === 0 ? q : q.map((v, a) => r3(v + shift.getComponent(a))))) : p.path;
+      return { ...p, center: to.toArray().map(r3), ...(path ? { path } : {}) };
+    });
+  }
+
   // The model as a binary glTF (.glb) download.
   async exportGlb() {
     if (!this.stage || !this.builder.parts.length) return;
@@ -193,6 +252,7 @@ class Engine3D {
     this.builder.clear();
     if (this.imported) this.stage!.model.remove(this.imported);
     this.imported = null;
+    this.importedPart = null;
     this.builds.length = 0;
     this.redos = [];
     this.sketch.round = 1;
@@ -340,7 +400,9 @@ class Engine3D {
   async perceive(transcript: string) {
     if (this.busy || !this.stage) return;
     const stage = this.stage, sketch = this.sketch, builder = this.builder;
-    const editing = builder.parts.length > 0;
+    const editing = builder.parts.length > 0 || !!this.importedPart;
+    // The opened model goes in as a part Spark keeps (the builder never draws it).
+    const current = this.importedPart && !builder.parts.some((p) => p.primitive === 'mesh') ? [this.importedPart, ...builder.parts] : builder.parts;
     const strokes = editing ? sketch.current() : sketch.strokes;
     if (!strokes.length && !(editing && transcript)) return this.onNotice('Draw something first, then talk or type.');
     this.busy = true;
@@ -369,17 +431,18 @@ class Engine3D {
       const got: Part[] = [];
       let said = '';
       const t0 = Date.now();
-      const r = await perceive({ views, transcript, strokes: strokes.map((s) => this.strokeInfo(s)), parts: builder.parts }, (ev) => {
+      const r = await perceive({ views, transcript, strokes: strokes.map((s) => this.strokeInfo(s)), parts: current }, (ev) => {
         if (ev.type === 'say') said = ev.say;
         if (ev.type === 'part') {
           got.push(ev.part as Part);
-          builder.apply(got, sketch.strokes, true);
+          builder.apply(this.onSurface(got, current), sketch.strokes, true);
           this.status(`Building · ${got.length} ${got.length === 1 ? 'part' : 'parts'}`, true);
         }
       });
       const a = r.answer;
       this.subject = a.subject;
       this.builds.push({ parts: before, transcript });
+      a.parts = this.onSurface(a.parts as Part[], current);
       builder.apply(a.parts as Part[], sketch.strokes);
       if (this.snapshot.wireframe) this.set({ wireframe: false });
       sketch.settle();

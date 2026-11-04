@@ -23,7 +23,7 @@ export type StrokeInfo = {
 };
 export type Part = {
   name: string;
-  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane' | 'lathe';
+  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane' | 'lathe' | 'mesh';
   center: number[];
   size: number[];
   rotation: number[];
@@ -53,7 +53,7 @@ const SCHEMA = {
         required: ['name', 'primitive', 'center', 'size', 'rotation', 'color', 'material', 'strokes', 'profile', 'path', 'radii', 'outline'],
         properties: {
           name: { type: 'string' },
-          primitive: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'cone', 'capsule', 'extrude', 'tube', 'membrane', 'lathe'] },
+          primitive: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'cone', 'capsule', 'extrude', 'tube', 'membrane', 'lathe', 'mesh'] },
           center: vec3,
           size: vec3,
           rotation: vec3,
@@ -79,7 +79,7 @@ How strokes are made: each stroke lies on a flat drawing plane. For plane "view"
 Images: the strokes from several viewpoints, each stroke in its own color with its id number at its middle. A gray model in the images is the current model, which the user is now editing.
 
 Parts:
-- primitive: box, cylinder, sphere, cone, capsule, extrude, tube, membrane or lathe.
+- primitive: box, cylinder, sphere, cone, capsule, extrude, tube, membrane or lathe; mesh = a model the user opened (a detailed asset shown in the images): return it exactly as given, attach new parts to its surface, never create a mesh.
 - center [x,y,z]; size [x,y,z] = full extents in the part's own frame before rotation. Cylinders, cones and capsules have their axis along their own Y: size[1] = length, size[0] = size[2] = diameter; a cone's tip points to its +Y.
 - rotation [x,y,z] in degrees, Euler XYZ; [0,0,0] when axis-aligned. Tilt only what is drawn tilted (a reclined back, a roof slope). Signs: a positive X rotation tips an upright part's top toward +Z (the front), so a chair back reclining backward has a negative X rotation; a positive Z rotation tips the top toward -X.
 - extrude: a flat slab whose outline is one closed stroke (a house's gable wall, a sign, a leaf, a letter). profile = that stroke id, size[2] = thickness, center = where the outline's middle should end up (move it to the right depth); its rotation is ignored. profile = -1 for every other primitive.
