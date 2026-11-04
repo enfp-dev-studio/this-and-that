@@ -180,6 +180,10 @@ export const audioDurationMs = (pcm: Int16Array | null) => (pcm ? Math.round(pcm
 
 // ---------- the video Spark watches ----------
 
+// About what ffmpeg made on the server (~100 KB for 5 s): Spark answered no
+// faster for a 4× bigger file, and a tablet uploads it 4× faster.
+const VIDEO_BITRATE = 300_000;
+
 // What this browser can encode, found once: H.264 for the picture, Opus (or
 // AAC) for the voice. Spark accepts either in an MP4 and hears both.
 let codecs: Promise<{ video: VideoEncoderConfig | null; audio: (AudioEncoderConfig & { mux: 'opus' | 'aac' }) | null }> | null = null;
@@ -188,9 +192,9 @@ function findCodecs(w: number, h: number) {
     if (typeof VideoEncoder === 'undefined') return { video: null, audio: null };
     let video: VideoEncoderConfig | null = null;
     for (const codec of ['avc1.42001f', 'avc1.4d001f', 'avc1.640028', 'avc1.42002a']) {
-      const cfg: VideoEncoderConfig = { codec, width: w, height: h, bitrate: 1_200_000, framerate: 8, avc: { format: 'avc' } };
+      const cfg: VideoEncoderConfig = { codec, width: w, height: h, bitrate: VIDEO_BITRATE, framerate: 8, avc: { format: 'avc' } };
       if ((await VideoEncoder.isConfigSupported(cfg).catch(() => ({ supported: false }))).supported) {
-        video = { codec, width: 0, height: 0, bitrate: 1_200_000, framerate: 8, avc: { format: 'avc' } };
+        video = { codec, width: 0, height: 0, bitrate: VIDEO_BITRATE, framerate: 8, avc: { format: 'avc' } };
         break;
       }
     }
@@ -271,7 +275,7 @@ export async function renderVideo(image: Source, strokes: Stroke[], pcm: Int16Ar
     g.drawImage(base, 0, 0);
     drawStrokes(g, strokes, w, h, scale, t, true);
     const frame = new VideoFrame(frameCanvas, { timestamp: Math.round((f * 1e6) / fps), duration: Math.round(1e6 / fps) });
-    venc.encode(frame, { keyFrame: f % (fps * 2) === 0 });
+    venc.encode(frame, { keyFrame: f % (fps * 4) === 0 });
     frame.close();
     if (venc.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 0));
   }

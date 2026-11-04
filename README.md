@@ -52,6 +52,8 @@ npm start            # builds the client and serves everything on http://localho
 
 For development, run `npm run server` and `npm run dev` (Vite on :5173, proxies `/api` to :8787).
 
+**On Cloudflare** (branch `browser-runtime`): the whole pipeline runs in the browser and one stateless Worker only adds the API key, checks a demo passcode and caps the cost. See [docs/browser-runtime.md](docs/browser-runtime.md) and [docs/deploy-cloudflare.md](docs/deploy-cloudflare.md); locally `npm run worker:dev` + `npm run dev:web` (http://localhost:5191).
+
 **On an Android tablet:** connect it over USB with USB debugging on, then
 
 ```sh

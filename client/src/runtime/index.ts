@@ -17,7 +17,7 @@ import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoke
 import { applyLocal, LOCAL_OPS } from './local';
 import { audioDurationMs, canEncodeVideo, warmUpVideo, colorOf, composeWithRefs, cropAround, dataUrlOf, drawn, encode, fromPixels, jpegUrl, keyFrames, maxVolumeDb, outlineImage, pixels, renderVideo, toWav, type Source, type Stroke } from './render';
 import { Trace } from './trace';
-import { put, saveBlob } from './store';
+import { get, put, saveBlob } from './store';
 
 const MAX_SIDE = 2048;
 // Probe the video codecs and wake the encoder before the first edit needs them.
@@ -375,9 +375,11 @@ async function runWholeJob(job: Job, img: StoredImage, text: string | null, pcm:
   saveJob(job);
 }
 
-function saveJob(job: Job) {
+// The final state over the record written at the start (strokes, references).
+async function saveJob(job: Job) {
   const { trace, ...record } = job;
-  put('jobs', { ...record, at: Date.now() });
+  const first = await get<Record<string, unknown>>('jobs', job.id);
+  put('jobs', { ...first, ...record, at: Date.now() });
   if (trace) put('traces', { id: job.id, ...(trace as object) });
 }
 
