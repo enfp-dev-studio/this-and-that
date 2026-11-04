@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Mic, Zap } from 'lucide-react';
+import { CloudOff, Loader2, Mic, RotateCcw, Zap } from 'lucide-react';
+import { editor } from '@/editor/engine';
 import { useEditor } from '@/hooks/use-editor';
 import { cn } from '@/lib/utils';
 import { LAB } from '@/lab';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { MarkBadge } from '@/components/mark-badge';
 
@@ -28,6 +30,35 @@ export function StatusChip() {
       {s.mode === 'processing' ? <Loader2 className="animate-spin" /> : s.mode === 'recording' ? <Mic /> : null}
       {text}
     </Badge>
+  );
+}
+
+// An edit that didn't come through (a model timed out or refused, even after
+// a retry): a calm word, the marks still on the picture, one tap to resend.
+export function FailNotice() {
+  const s = useEditor();
+  if (!s.failure || s.mode !== 'idle') return null;
+  const text = (
+    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+      <CloudOff />
+      That edit didn’t come through
+    </span>
+  );
+  return (
+    <div role="alert" className="absolute top-4 left-1/2 flex -translate-x-1/2 items-center gap-4 rounded-full border bg-card/90 p-2 shadow-xl backdrop-blur">
+      {LAB ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{text}</TooltipTrigger>
+          <TooltipContent>{s.failure}</TooltipContent>
+        </Tooltip>
+      ) : (
+        text
+      )}
+      <Button size="touch" className="rounded-full" onClick={() => editor.retry()}>
+        <RotateCcw />
+        Try again
+      </Button>
+    </div>
   );
 }
 

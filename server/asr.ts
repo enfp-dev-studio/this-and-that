@@ -12,7 +12,8 @@ export class RealtimeAsr {
   private final: Promise<string>;
   private failed = false;
 
-  constructor() {
+  // `keywords`: words to listen for (the picture's part names).
+  constructor(keywords: string[] = []) {
     this.ws = new WebSocket('wss://api.meta.ai/v1/asr/realtime');
     const ready = Promise.withResolvers<void>();
     const final = Promise.withResolvers<string>();
@@ -25,6 +26,8 @@ export class RealtimeAsr {
       ready.reject(e);
       final.reject(e);
     };
+    // A socket that never opens must not hold up the recording: batch takes over.
+    const opening = setTimeout(() => fail(new Error('realtime ASR did not open in time')), 4000);
     this.ws.onopen = () =>
       this.ws.send(JSON.stringify({
         // The key travels in the handshake, not in a header.
@@ -35,11 +38,14 @@ export class RealtimeAsr {
         partialMode: 'CUMULATIVE',
         emitAudioProgress: false,
         languageBias: ['Korean'],
+        ...(keywords.length ? { keywords } : {}),
       }));
     this.ws.onmessage = (ev) => {
       const msg = JSON.parse(String(ev.data));
-      if (msg.sessionId && !msg.type) ready.resolve();
-      else if (msg.type === 'transcript') {
+      if (msg.sessionId && !msg.type) {
+        clearTimeout(opening);
+        ready.resolve();
+      } else if (msg.type === 'transcript') {
         this.text = msg.transcript;
         if (msg.final) final.resolve(msg.transcript);
       } else if (msg.type === 'error') fail(new Error(msg.message));

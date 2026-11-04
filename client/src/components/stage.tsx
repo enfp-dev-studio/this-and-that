@@ -5,7 +5,7 @@ import { SAMPLES } from '@/editor/presets';
 import { useEditor } from '@/hooks/use-editor';
 import { Button } from '@/components/ui/button';
 import { Toolbar } from '@/components/toolbar';
-import { Callouts, Caption, StatusChip } from '@/components/canvas-feedback';
+import { Callouts, Caption, FailNotice, StatusChip } from '@/components/canvas-feedback';
 import { RefThumbs } from '@/components/ref-thumbs';
 
 // The picture on a quiet dotted backdrop, and everything about it on top:
@@ -66,6 +66,7 @@ export function Stage() {
         <>
           <Callouts />
           <StatusChip />
+          <FailNotice />
           <Caption />
           <RefThumbs />
           <Toolbar hold={hold} />

@@ -326,8 +326,10 @@ Make exactly these changes. Keep everything else exactly as in the first image: 
 // ---------- parts: what is in the picture, found once in the background ----------
 
 // A named part, its box on a 0–1000 grid, its parent (character → outfit →
-// cuff → lace) and its mirror pair (left/right counterpart); 0 = none.
-export type Part = { id: number; name: string; box: number[]; parent: number; pair: number };
+// cuff → lace) and its mirror pair (left/right counterpart); 0 = none. `ko`
+// is the word a Korean speaker would say for it, so speech recognition can
+// be told to listen for it.
+export type Part = { id: number; name: string; ko?: string; box: number[]; parent: number; pair: number };
 
 const PARTS_SCHEMA = {
   type: 'object',
@@ -339,11 +341,12 @@ const PARTS_SCHEMA = {
         properties: {
           id: { type: 'integer', description: 'From 1' },
           name: { type: 'string', description: 'Short English name, with left/right as the viewer sees the picture where it matters' },
+          ko: { type: 'string', description: 'What a Korean speaker would call it, in 1-2 Korean words without left/right (e.g. 브로치, 머리핀, 소매 레이스)' },
           box: { type: 'array', items: { type: 'integer' }, description: '[x_min, y_min, x_max, y_max] on a 0-1000 grid' },
           parent: { type: 'integer', description: 'id of the part this belongs to, or 0' },
           pair: { type: 'integer', description: 'id of its left/right counterpart (the other cuff, earring, eye), or 0' },
         },
-        required: ['id', 'name', 'box', 'parent', 'pair'],
+        required: ['id', 'name', 'ko', 'box', 'parent', 'pair'],
       },
     },
   },
@@ -351,9 +354,17 @@ const PARTS_SCHEMA = {
 };
 
 export async function findParts(small: Small, trace?: Trace): Promise<Part[]> {
-  const text = `List the parts of this picture someone might want to edit, as a hierarchy where it helps (character → outfit → left cuff → lace). Include small details: jewelry, hair accessories, ornaments, brooches, emblems, eyes, hands, lace, embroidery, buttons, and the main objects and background areas. Give each a short name and a tight box, its parent, and its left/right counterpart if it has one. At most 40 parts.`;
-  const r = await sparkJson<{ parts: Part[] }>({ effort: 'minimal', content: [{ type: 'text', text }, imagePart(small.jpeg, 'image/jpeg')], schema: PARTS_SCHEMA, trace, label: 'spark parts' });
+  const text = `List the parts of this picture someone might want to edit, as a hierarchy where it helps (character → outfit → left cuff → lace). Include small details: jewelry, hair accessories, ornaments, brooches, emblems, eyes, hands, lace, embroidery, buttons, and the main objects and background areas. Give each a short name, the Korean word for it, a tight box, its parent, and its left/right counterpart if it has one. At most 40 parts.`;
+  // Background work, 12-16 s: a longer deadline than the interactive calls.
+  const r = await sparkJson<{ parts: Part[] }>({ effort: 'minimal', content: [{ type: 'text', text }, imagePart(small.jpeg, 'image/jpeg')], schema: PARTS_SCHEMA, trace, label: 'spark parts', timeoutMs: 45_000 });
   return r.parts.filter((p) => p.box?.length === 4);
+}
+
+// Words for Voice Transcribe to listen for: what the parts are called, in
+// Korean and English, one or two words each.
+export function partKeywords(parts: Part[], max = 80) {
+  const words = parts.flatMap((p) => [p.ko, p.name.replace(/\b(left|right|upper|lower|top|bottom)\b/gi, '').trim()]);
+  return [...new Set(words.filter((w): w is string => !!w && w.split(/\s+/).length <= 2))].slice(0, max);
 }
 
 // For Spark's mapping: the named parts each mark covers (the most specific

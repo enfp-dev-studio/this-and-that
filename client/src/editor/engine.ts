@@ -54,6 +54,7 @@ export type Snapshot = {
   method: Method;
   task: string; // the preset being done, or "Free"
   trials: Trial[];
+  failure: string | null; // why the last edit didn't come through; its marks are kept for "Try again"
 };
 
 type Job = {
@@ -91,6 +92,10 @@ async function upload(url: string) {
   return (await postJson('/api/images', { image: dataUrl })).imageId as string;
 }
 
+// Start the server's parts pass on a reference, so its part names are words
+// to listen for by the time the user talks about it.
+const findPartsOf = (ref: Ref) => ref.imageId.then((id) => fetch(`/api/images/${id}/parts`)).catch(() => {});
+
 const loadImage = async (url: string) => {
   const img = new Image();
   img.src = url;
@@ -121,6 +126,7 @@ class Editor {
     method: 'pen',
     task: 'Free',
     trials: loadTrials(),
+    failure: null,
   };
   private listeners = new Set<() => void>();
   onError: (message: string) => void = () => {};
@@ -144,6 +150,8 @@ class Editor {
   // Experiment timing: when this round's input began, and the round waiting for its result.
   private inputAt: number | null = null;
   private pending: (Omit<Round, 'waitMs' | 'kept'> & { sentAt: number }) | null = null;
+  // The last request, so a failed edit can be sent again with one tap.
+  private lastSend: { body: Record<string, unknown>; jobId?: string } | null = null;
 
   // ---------- store ----------
 
@@ -472,7 +480,7 @@ class Editor {
     if (this.snapshot.mode === 'processing') return;
     if (this.snapshot.mode === 'recording') this.cancelRecording();
     this.strokes = [];
-    this.set({ marks: 0 });
+    this.set({ marks: 0, failure: null });
     this.draw();
   }
 
@@ -482,6 +490,7 @@ class Editor {
     const url = await blobToDataUrl(file);
     const ref: Ref = { id: crypto.randomUUID().slice(0, 8), url, imageId: upload(url), pinned: false };
     ref.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
+    findPartsOf(ref);
     this.set({ refs: [...this.snapshot.refs, ref] });
     await this.openRef(ref.id);
   }
@@ -626,7 +635,7 @@ class Editor {
       // The clock starts when audio does, so stroke times line up with the voice.
       this.t0 = performance.now();
       try {
-        this.live = new LiveAsr(this.micStream, (text) => this.snapshot.mode === 'recording' && text && this.set({ caption: text }));
+        this.live = new LiveAsr(this.micStream, (text) => this.snapshot.mode === 'recording' && text && this.set({ caption: text }), this.listenFor());
       } catch {
         this.live = null; // batch transcription on the server still works
       }
@@ -634,6 +643,11 @@ class Editor {
       this.recorder = null;
       this.onNotice(`Microphone unavailable (${(err as Error).message}). Marks only.`);
     }
+  }
+
+  // The picture and its references, for the words Voice Transcribe listens for.
+  private listenFor() {
+    return Promise.all([this.current()!.imageId, ...this.snapshot.refs.map((r) => r.imageId)]).catch(() => []);
   }
 
   private cancelRecording() {
@@ -671,14 +685,34 @@ class Editor {
     this.animate();
     try {
       const refId = (id?: string) => this.snapshot.refs.find((r) => r.id === id)?.imageId;
-      const { id } = await postJson('/api/jobs', {
+      const body = {
         imageId: await this.current()!.imageId,
         strokes: await Promise.all(this.strokes.map(async ({ mark, points, markId, on }) => ({ mark, points, markId, on: on ? await refId(on) : undefined }))),
         pinned: await Promise.all(this.snapshot.refs.filter((r) => r.pinned).map((r) => r.imageId)),
         audio: audio ? await blobToDataUrl(audio) : null,
-        asrId: await asrId,
-      });
-      await this.follow(id);
+      };
+      await this.sendJob(body, { asrId: await asrId });
+    } catch (err) {
+      this.fail((err as Error).message);
+    }
+  }
+
+  private async sendJob(body: Record<string, unknown>, once: Record<string, unknown> = {}) {
+    this.lastSend = { body };
+    const { id } = await postJson('/api/jobs', { ...body, ...once });
+    this.lastSend.jobId = id;
+    await this.follow(id);
+  }
+
+  // "Try again" after an edit didn't come through: the same marks and voice,
+  // sent again; the server reuses what it already understood.
+  async retry() {
+    const last = this.lastSend;
+    if (!last || this.snapshot.mode !== 'idle' || !this.snapshot.failure) return;
+    this.set({ mode: 'processing', failure: null, steps: { ...NO_STEPS, sam: 'done' }, edits: [], localMarks: [], elapsedMs: 0 });
+    this.animate();
+    try {
+      await this.sendJob(last.body, { retryOf: last.jobId });
     } catch (err) {
       this.fail((err as Error).message);
     }
@@ -704,6 +738,7 @@ class Editor {
     const refs: Ref[] = task.refs.map((r) => {
       const ref: Ref = { id: crypto.randomUUID().slice(0, 8), url: r.url, imageId: upload(r.url), pinned: r.pinned };
       ref.imageId.catch((e) => this.onError(`Upload failed: ${e.message}`));
+      findPartsOf(ref);
       return ref;
     });
     this.set({ task: task.title, refs });
@@ -725,8 +760,8 @@ class Editor {
   private async sendWhole(body: { text?: string; audio?: string | null; asrId?: string | null }) {
     this.set({ mode: 'processing', steps: { ...NO_STEPS, sam: 'done' }, elapsedMs: 0, marks: 0 });
     try {
-      const { id } = await postJson('/api/jobs', { imageId: await this.current()!.imageId, whole: true, ...body });
-      await this.follow(id);
+      const { asrId, ...rest } = body;
+      await this.sendJob({ imageId: await this.current()!.imageId, whole: true, ...rest }, { asrId });
     } catch (err) {
       this.fail((err as Error).message);
     }
@@ -785,7 +820,7 @@ class Editor {
   // ---------- progress ----------
 
   private emptyPanel() {
-    return { caption: '', edits: [], localMarks: [], steps: { ...NO_STEPS }, elapsedMs: 0 };
+    return { caption: '', edits: [], localMarks: [], steps: { ...NO_STEPS }, elapsedMs: 0, failure: null };
   }
 
   private updateSamStep() {
@@ -793,9 +828,13 @@ class Editor {
     this.set({ steps: { ...this.snapshot.steps, sam: this.strokes.every((s) => s.samDone) ? 'done' : 'active' } });
   }
 
+  // Every model call on the server has a deadline and one retry, so a job
+  // ends within ~2 minutes; this is the client's own backstop.
   private async follow(id: string) {
+    const started = performance.now();
     for (;;) {
-      const job: Job = await (await fetch(`/api/jobs/${id}`)).json();
+      if (performance.now() - started > 150_000) throw new Error('no answer in 150 s');
+      const job: Job = await (await fetch(`/api/jobs/${id}`, { signal: AbortSignal.timeout(10_000) })).json();
       if (job.error) throw new Error(job.error);
       const at = SERVER_STEPS.indexOf(job.stage as (typeof SERVER_STEPS)[number]);
       const steps = { ...this.snapshot.steps };
@@ -833,11 +872,13 @@ class Editor {
     this.draw();
   }
 
+  // The marks stay on the picture, and the canvas offers "Try again".
   private fail(message: string) {
+    console.warn('Edit failed:', message);
     this.pending = null;
     this.inputAt = null;
-    this.set({ mode: 'idle', steps: { ...NO_STEPS } });
-    this.onError(message);
+    this.preview = null;
+    this.set({ mode: 'idle', steps: { ...NO_STEPS }, failure: message || 'unknown error' });
     this.draw();
   }
 }

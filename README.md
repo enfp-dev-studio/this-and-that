@@ -85,6 +85,13 @@ With a stylus, finger touches on the image are ignored (palm rejection, the pen 
 - Instant edits: recolor, tone and enlarge run locally (all-local edits ~6 s instead of 15–22 s). Moving or shrinking leaves a hole that a local fill could not make look right, so those still go to Muse Image.
 - Tried and left off: starting Muse Image speculatively from the transcript alone, in parallel with Spark (`SPECULATE=1`). It saved ~5 s (median 14.8 s vs 20.9 s) and guessed the mark mapping right 12/12 times, but it passes the transcript as is, so a misheard word ("시계" heard as "시기") gave a wrong edit in 3 of 4 runs, where Spark's reading was right.
 
+## Robustness
+
+- Every model call has a deadline and one retry with a short backoff: Muse Image 40 s, Spark 20 s (45 s for the background parts pass), SAM 10 s, Voice Transcribe 10 s. Muse Image sometimes takes 200+ s or answers a content-filter 400; the deadline cuts the first, the retry often gets past both. Lower them by env (`MUSE_TIMEOUT_MS=500`, `SPARK_TIMEOUT_MS`, `SAM_TIMEOUT_MS`, `TRANSCRIBE_TIMEOUT_MS`) to rehearse failures.
+- The realtime transcription socket must open within 4 s, and the client waits at most 3 s for its last audio chunks; otherwise the recording is transcribed in one batch.
+- If an edit still fails, the canvas says "That edit didn't come through" with **Try again**. The marks stay on the picture, and the resend reuses what the server already understood (transcript and Spark's mapping), so it goes straight to Muse Image. The client also gives up on its own after 150 s, so it is never stuck "working".
+- Voice Transcribe is told the picture's part names as `keywords` (Korean and English, from the background parts pass; references included), so "브로치" or "머리핀" is heard as said.
+
 ## Same model, different input (benchmark)
 
 `m0/bench-vs.ts` makes six pictures with Muse Image and asks for one change in each, two ways: typed as a chat instruction to Muse Image ("remove the coffee cup on the left"), and through This & That (a circle drawn while saying it in Korean, synthetic voice). Drift is the share of pixels outside the intended region that changed by more than 24/255. Side-by-side images are written to `out/bench/`.

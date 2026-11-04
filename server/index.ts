@@ -15,8 +15,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
-import { editImage, transcribe, type Mask } from './meta.ts';
-import { editAreas, findParts, guideImage, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { editImage, transcribe, type Mask, type Turn } from './meta.ts';
+import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
 import { applyLocal, LOCAL_OPS } from './local.ts';
 import { RealtimeAsr } from './asr.ts';
 import { audioDurationMs, colorOf, composeWithRefs, cropAround, renderVideo, toWav, type Stroke } from './render.ts';
@@ -110,12 +110,22 @@ type Job = {
   startedAt: number;
 };
 const jobs = new Map<string, Job>();
+// What a job understood, so "Try again" after a failed edit skips straight to Muse Image.
+type Prior = { transcript?: string; edits?: Edit[] };
+const priors = new Map<string, Prior>();
+
+// What Voice Transcribe should listen for: the part names of the picture and
+// its references, from the background parts pass (asking starts it for next time).
+function keywordsFor(imgs: StoredImage[]) {
+  for (const img of imgs) partsOf(img);
+  return partKeywords(imgs.flatMap((img) => img.partsReady ?? []));
+}
 
 // Realtime transcription sessions, one per recording; dropped after a minute.
 const liveAsr = new Map<string, RealtimeAsr>();
-function startLiveAsr() {
+function startLiveAsr(keywords: string[]) {
   const id = newId();
-  const asr = new RealtimeAsr();
+  const asr = new RealtimeAsr(keywords);
   liveAsr.set(id, asr);
   setTimeout(() => (asr.close(), liveAsr.delete(id)), 60_000);
   return id;
@@ -134,7 +144,7 @@ const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', specula
 // Marks drawn on reference pictures, and references pinned to every edit.
 type Refs = { marks: { ref: StoredImage; stroke: Stroke }[]; pinned: StoredImage[] };
 
-async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr, refs: Refs = { marks: [], pinned: [] }) {
+async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts, live?: RealtimeAsr, refs: Refs = { marks: [], pinned: [] }, prior?: Prior) {
   const dir = join(jobsDir, job.id);
   mkdirSync(dir, { recursive: true });
   const trace = new Trace();
@@ -152,8 +162,10 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     wavPath = await T('to wav', () => toWav(join(dir, 'voice.webm'), join(dir, 'voice.wav')));
   }
   // The realtime transcript (streamed while talking) if it arrives, else batch.
-  const batch = () => T('transcribe', () => transcribe(readFileSync(wavPath!), trace)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null));
+  const keywords = keywordsFor([img, ...refs.marks.map((m) => m.ref), ...refs.pinned]);
+  const batch = () => T('transcribe', () => transcribe(readFileSync(wavPath!), trace, keywords)).catch((e) => (console.error(`[${job.id}] transcribe failed:`, e), null));
   const asr = (async () => {
+    if (prior?.transcript) return { transcript: prior.transcript, turns: [] as Turn[] };
     const text = live ? await T('transcribe (realtime end)', () => live.finish()) : null;
     live?.close();
     job.asrVia = text ? 'realtime' : 'batch';
@@ -163,10 +175,10 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     }
     return wavPath ? batch() : null;
   })();
-  asr.then((r) => (job.transcript = r?.transcript));
+  asr.then((r) => (job.transcript = r?.transcript, priors.set(job.id, { transcript: r?.transcript })));
   // With marks on references, Spark watches them side by side with the picture.
   const composed = refs.marks.length ? await T('compose refs', () => composeWithRefs(image, strokes, refs.marks)) : null;
-  const video = T('render video', async () => {
+  const video = prior?.edits ? Promise.resolve(null) : T('render video', async () => {
     const durationMs = wavPath ? await audioDurationMs(wavPath) : 0;
     const [videoImage, videoStrokes] = composed ? [composed.composite, composed.strokes] : [image, strokes];
     return readFileSync(await renderVideo(videoImage, videoStrokes, wavPath, join(dir, 'video.mp4'), { durationMs, maxSide: composed ? 768 : 512 }));
@@ -176,7 +188,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   // Speculation: start Muse Image as soon as the transcript is in, guessing
   // that the n-th "this/that" goes with the n-th mark. Spark then checks.
   let spec: { clauses: string[]; edited: Promise<Buffer> } | null = null;
-  if (opts.speculate && !refs.marks.length && !refs.pinned.length) {
+  if (opts.speculate && !prior?.edits && !refs.marks.length && !refs.pinned.length) {
     const asrResult = await asr;
     const clauses = asrResult ? splitClauses(asrResult.transcript, strokes.length) : null;
     if (clauses) {
@@ -190,11 +202,14 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   // word (in tests "노란색" became "검은색"); with the hint it doesn't.
   const [asrResult, mp4] = await Promise.all([asr, video]);
   let edits: Edit[];
-  try {
+  if (prior?.edits) {
+    edits = prior.edits;
+    job.via = 'retry';
+  } else try {
     // Named parts if the background pass is already done; never waited for.
     const parts = img.partsReady ? partsHint(strokes, img.partsReady, img.width, img.height) : undefined;
     if (parts) writeFileSync(join(dir, 'parts-hint.txt'), parts);
-    const r = await T('spark', () => understandVideo(mp4, composed?.strokes ?? strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant, places: composed?.places, parts }));
+    const r = await T('spark', () => understandVideo(mp4!, composed?.strokes ?? strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant, places: composed?.places, parts }));
     edits = r.edits;
     job.transcript ||= r.transcript;
     job.via = 'spark-video';
@@ -203,6 +218,7 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
     edits = (await T('spark fallback', async () => understandTranscript(await guide, strokes, asrResult?.turns ?? [], { effort: 'minimal', trace }))).edits;
     job.via = 'transcript';
   }
+  priors.set(job.id, { transcript: job.transcript, edits });
   const isRefMark = (mark: number) => refs.marks.some((m) => m.stroke.mark === mark);
   job.edits = edits.filter((e) => strokes.some((s) => s.mark === e.mark) || isRefMark(e.mark));
   writeFileSync(join(dir, 'edits.json'), JSON.stringify(job.edits, null, 2));
@@ -305,7 +321,7 @@ async function runWholeJob(job: Job, img: StoredImage, text: string | null, audi
     if (!request && audioBuf?.length) {
       writeFileSync(join(dir, 'voice.webm'), audioBuf);
       const wav = await toWav(join(dir, 'voice.webm'), join(dir, 'voice.wav'));
-      request = (await T('transcribe', () => transcribe(readFileSync(wav), trace))).transcript;
+      request = (await T('transcribe', () => transcribe(readFileSync(wav), trace, keywordsFor([img])))).transcript;
     }
   }
   if (!request) throw new Error('nothing was said');
@@ -356,7 +372,15 @@ createServer(async (req, res) => {
     }
     // Realtime transcription: open on record, PCM chunks while talking (each
     // reply carries the transcript so far, for live captions).
-    if (req.method === 'POST' && url.pathname === '/api/asr') return send(res, 200, { asrId: startLiveAsr() });
+    // Body: { imageIds } — the picture and its references, whose part names to listen for.
+    if (req.method === 'POST' && url.pathname === '/api/asr') {
+      const body = await readJson(req).catch(() => ({}));
+      const imgs = ((body.imageIds ?? []) as string[]).flatMap((id) => images.get(String(id)) ?? []);
+      const keywords = keywordsFor(imgs);
+      const asrId = startLiveAsr(keywords);
+      console.log(`[asr ${asrId}] listening for ${keywords.length} part words`);
+      return send(res, 200, { asrId });
+    }
     if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'asr' && parts[2]) {
       const asr = liveAsr.get(parts[2]);
       if (!asr) return send(res, 404, { error: 'no such transcription' });
@@ -406,7 +430,8 @@ createServer(async (req, res) => {
       const opts: Opts = { ...DEFAULT_OPTS, ...(body.opts ?? {}) };
       const live = body.asrId ? liveAsr.get(String(body.asrId)) : undefined;
       if (live) liveAsr.delete(String(body.asrId));
-      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts, live, refs).catch((e) => {
+      const prior = body.retryOf ? priors.get(String(body.retryOf)) : undefined;
+      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts, live, refs, prior).catch((e) => {
         console.error(`[${job.id}]`, e);
         job.error = String(e.message ?? e);
         job.stage = 'error';

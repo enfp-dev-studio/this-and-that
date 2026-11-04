@@ -4,7 +4,7 @@
 import { postJson } from './api';
 
 export class LiveAsr {
-  id: Promise<string | null> = postJson('/api/asr', {}).then((r) => r.asrId as string, () => null);
+  id: Promise<string | null>;
   private ctx = new AudioContext();
   private src: MediaStreamAudioSourceNode;
   private node: ScriptProcessorNode;
@@ -12,7 +12,10 @@ export class LiveAsr {
   private pendingLength = 0;
   private queue = Promise.resolve();
 
-  constructor(stream: MediaStream, private onText: (text: string) => void) {
+  // `imageIds`: the picture and its references, whose part names the server
+  // tells Voice Transcribe to listen for.
+  constructor(stream: MediaStream, private onText: (text: string) => void, imageIds: Promise<string[]>) {
+    this.id = imageIds.then((ids) => postJson('/api/asr', { imageIds: ids })).then((r) => r.asrId as string, () => null);
     this.src = this.ctx.createMediaStreamSource(stream);
     this.node = this.ctx.createScriptProcessor(4096, 1, 1);
     this.node.onaudioprocess = (e) => this.push(e.inputBuffer.getChannelData(0));
@@ -53,13 +56,14 @@ export class LiveAsr {
     }).catch(() => {});
   }
 
-  // Stop streaming; resolves to the session id once every chunk is sent.
+  // Stop streaming; resolves to the session id once every chunk is sent, or
+  // to null after 3 s (the server then transcribes the recording instead).
   async stop() {
     this.node.disconnect();
     this.src.disconnect();
     this.flush();
-    await this.queue;
+    const sent = await Promise.race([this.queue.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 3000))]);
     this.ctx.close();
-    return this.id;
+    return sent ? this.id : null;
   }
 }
