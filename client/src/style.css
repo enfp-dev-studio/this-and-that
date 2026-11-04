@@ -57,4 +57,5 @@ footer { display: flex; gap: 16px; align-items: flex-start; padding: 12px 16px; 
 #edits li { margin: 2px 0; }
 #edits b { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: white; font-size: 13px; margin-right: 6px; }
 #review { margin-top: 8px; display: flex; gap: 8px; }
+.instant { color: #ffd60a; font-style: normal; font-size: 13px; }
 .error { color: #ff6b6b; }

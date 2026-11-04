@@ -43,6 +43,27 @@ const CLIPS: Clip[] = [
       { say: '그리고 저건 초록색으로.', object: 'the mug', shape: 'circle', expect: 'mug → green' },
     ],
   },
+  // Simple edits the app can apply locally (M2 instant edits).
+  {
+    name: 'd',
+    segments: [
+      { say: '이거는 빨간색으로 바꾸고,', object: 'the mug', shape: 'circle', expect: 'mug → red (recolor)' },
+      { say: '저건 좀 더 밝게 해 줘.', object: 'the lamp', shape: 'circle', expect: 'lamp → brighter (tone)' },
+    ],
+  },
+  {
+    name: 'e',
+    segments: [
+      { say: '이 컵을', object: 'the mug', shape: 'circle', expect: 'mug → move (with mark 2)' },
+      { say: '여기로 옮겨 줘.', object: 'the mug', shape: 'arrow-right', expect: 'destination for mark 1' },
+    ],
+  },
+  {
+    name: 'f',
+    segments: [
+      { say: '이 선인장 좀 더 크게 해 줘.', object: 'the cactus', shape: 'circle', expect: 'cactus → bigger (scale)' },
+    ],
+  },
 ];
 
 const imagePath = join(out, 'image.png');

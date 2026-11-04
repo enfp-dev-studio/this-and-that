@@ -5,8 +5,10 @@
 //
 //   node m0/bench.ts [a b c]       (server on :8787)
 //   ONESHOT=1 node m0/bench.ts     (old flow: everything sent on release)
+//   INSTANT=1 / SPECULATE=1        turn on an experiment for these jobs
+//   LABEL=x                        copies each result to out/bench-runs/x-<clip>.jpg
 
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const BASE = process.env.BASE ?? 'http://localhost:8787';
@@ -39,21 +41,29 @@ for (const name of clips) {
   released = Date.now();
   await Promise.all(markCalls);
   const masksAt = marksDone.length ? Math.max(...marksDone) - released : NaN;
-  const { id } = await post('/api/jobs', process.env.ONESHOT ? { image, strokes, audio } : { imageId, strokes, audio });
+  const opts = { instant: process.env.INSTANT === '1', speculate: process.env.SPECULATE === '1' };
+  const { id } = await post('/api/jobs', process.env.ONESHOT ? { image, strokes, audio, opts } : { imageId, strokes, audio, opts });
 
   let editsAt = 0;
+  let previewAt = 0;
   for (;;) {
     const job = await (await fetch(`${BASE}/api/jobs/${id}`)).json();
     if (job.error) throw new Error(job.error);
     if (job.edits && !editsAt) editsAt = Date.now() - released;
+    if (job.previewImageId && !previewAt) previewAt = Date.now() - released;
     if (job.stage === 'done') break;
     await sleep(150);
   }
   const total = Date.now() - released;
   const trace = await (await fetch(`${BASE}/api/jobs/${id}/trace.json`)).json();
   const edits = await (await fetch(`${BASE}/api/jobs/${id}/edits.json`)).json();
-  console.log(`\n${name} (${id}): release→result ${total} ms, masks ready ${Number.isNaN(masksAt) ? '-' : `${Math.max(0, masksAt)} ms`}, edits shown ${editsAt} ms`);
+  console.log(`\n${name} (${id}): release→result ${total} ms, masks ready ${Number.isNaN(masksAt) ? '-' : `${Math.max(0, masksAt)} ms`}, edits shown ${editsAt} ms, instant preview ${previewAt || '-'} ms, local marks ${JSON.stringify(trace.localMarks ?? [])}, speculation ${trace.speculation ?? '-'}`);
+  console.log(`RESULT ${JSON.stringify({ clip: name, label: process.env.LABEL ?? '', total, editsAt, previewAt, local: trace.localMarks ?? [], speculation: trace.speculation ?? null })}`);
+  if (process.env.LABEL) {
+    mkdirSync(join(out, '..', 'bench-runs'), { recursive: true });
+    copyFileSync(join(out, '..', 'jobs', id, 'result.jpg'), join(out, '..', 'bench-runs', `${process.env.LABEL}-${name}.jpg`));
+  }
   for (const s of trace.spans.sort((a: any, b: any) => a.start - b.start)) console.log(`  ${s.name.padEnd(16)} @${String(s.start).padStart(6)} +${s.ms}`);
   for (const u of trace.usage) console.log(`  usage ${u.name}: ${JSON.stringify(u.usage)}`);
-  for (const e of edits) console.log(`  ${e.mark}. ${e.target} → ${e.instruction}`);
+  for (const e of edits) console.log(`  ${e.mark}. ${e.target} → ${e.instruction}${e.op ? ` [${e.op} ${e.color || ''} ${e.amount ?? ''}]` : ''}`);
 }

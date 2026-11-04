@@ -6,17 +6,39 @@ import { editImage, imagePart, samObjects, sparkJson, videoPart, type Mask, type
 import type { Trace } from './trace.ts';
 import { colorNameOf, guideImage, pasteAlpha, pasteBack, strokeBox, type Stroke } from './render.ts';
 
-export type Edit = { mark: number; heard?: string; kind?: 'object' | 'pointer'; target: string; instruction: string };
+export type Edit = {
+  mark: number;
+  heard?: string;
+  kind?: 'object' | 'pointer';
+  target: string;
+  instruction: string;
+  // With instant edits on: what kind of change, so simple ones run locally.
+  op?: 'recolor' | 'tone' | 'scale' | 'move' | 'generative';
+  color?: string;
+  amount?: number;
+};
+
+// Fields Spark fills when instant edits are on.
+const OP_FIELDS = {
+  op: {
+    type: 'string',
+    enum: ['recolor', 'tone', 'scale', 'move', 'generative'],
+    description: 'recolor: change the colour of the marked object, nothing else. tone: only brighter/darker. scale: only make it bigger/smaller in place. move: only move it somewhere else. generative: anything else (remove, add, replace, reshape, change pose or material, redraw). For a pointer mark use the op of the object it belongs to.',
+  },
+  color: { type: 'string', description: 'recolor only: the target colour as #rrggbb, a natural shade that suits the picture rather than a pure one (e.g. red #c0392b, green #3f9b4f, yellow #f2c230, black #1c1c1c, white #f2f2f2). Otherwise ""' },
+  amount: { type: 'number', description: 'tone: brightness factor (1.3 brighter, 0.7 darker). scale: size factor (1.5 bigger, 0.7 smaller). Otherwise 1' },
+};
 
 // Spark's answer. Its latency follows the length of what it writes, so the
 // app asks for short fields; `transcript` is only needed without the ASR hint.
-function editsSchema(o: { transcript?: boolean; heard?: boolean } = { transcript: true, heard: true }) {
+function editsSchema(o: { transcript?: boolean; heard?: boolean; ops?: boolean } = { transcript: true, heard: true }) {
   const item: Record<string, object> = {
     mark: { type: 'integer', description: 'The number on the mark' },
     ...(o.heard ? { heard: { type: 'string', description: 'The words spoken while this mark was being drawn, verbatim' } } : {}),
     kind: { type: 'string', enum: ['object', 'pointer'], description: 'object: the mark circles, covers or scribbles over the thing to change. pointer: an arrow or line that shows a direction or a destination for another mark' },
     target: { type: 'string', description: 'The object or area the mark covers or points at: an English noun phrase of 1-4 words' },
     instruction: { type: 'string', description: 'The change to make there: a short English imperative of at most 12 words. Self-contained, no "this" or "that".' },
+    ...(o.ops ? OP_FIELDS : {}),
   };
   return {
     type: 'object',
@@ -44,7 +66,7 @@ const RULES = `Deictic words such as 이거/이것/이건/여기/이쪽 (this, h
 
 // Primary path: Spark watches the drawing video with the voice track.
 // A transcript from Voice Transcribe, when given, guards against mishearing.
-export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { model?: string; withTimes?: boolean; effort?: string; transcript?: string; trace?: Trace; fps?: number; heard?: boolean } = {}) {
+export async function understandVideo(mp4: Buffer, strokes: Stroke[], opts: { model?: string; withTimes?: boolean; effort?: string; transcript?: string; trace?: Trace; fps?: number; heard?: boolean; ops?: boolean } = {}) {
   const heard = opts.transcript ? `\nA speech recogniser heard: "${opts.transcript}". Trust these words; use the audio for when each word is said.\n` : '';
   const text = `This video shows a person refining a picture. While speaking (often Korean), they draw numbered marks on it with a pen; each mark has its own colour and a numbered badge, and a white dot shows the pen tip while it is moving. Listen to the audio and watch when each mark is drawn.
 
@@ -54,7 +76,7 @@ The marks:
 ${markList(strokes, !!opts.withTimes)}
 
 For every mark, report ${opts.heard === false ? '' : 'what was said while drawing it and '}the change wanted there. Keep it short.`;
-  const schema = opts.transcript ? editsSchema({ heard: opts.heard !== false }) : EDITS_SCHEMA;
+  const schema = opts.transcript || opts.ops ? editsSchema({ heard: opts.heard !== false, transcript: !opts.transcript, ops: opts.ops }) : EDITS_SCHEMA;
   return sparkJson<{ transcript?: string; edits: Edit[] }>({ model: opts.model, effort: opts.effort, content: [{ type: 'text', text }, videoPart(mp4, opts.fps)], schema, trace: opts.trace, label: 'spark video' });
 }
 
@@ -172,3 +194,51 @@ export async function pasteMarked(image: Buffer, edited: Buffer, strokes: Stroke
 }
 
 export { guideImage };
+
+// ---------- speculation: guess the mapping from the transcript alone ----------
+
+// 이/저 only as a word of their own ("이 고양이"), so 이상한 or 저녁 don't count.
+const DEICTIC = /^(?:[이저요]$|이거|이것|이건|이게|이걸|여기|이쪽|요거|요기|저거|저것|저건|저게|저걸|저기|저쪽|그거|그건|거기)/;
+
+// Split what was said into one clause per mark, cutting before each "this /
+// that / here" word, on the guess that people name marks in drawing order.
+// Returns null when the count doesn't match the marks.
+export function splitClauses(transcript: string, marks: number): string[] | null {
+  const words = transcript.replace(/[.,!?]/g, ' ').split(/\s+/).filter(Boolean);
+  // ASR sometimes repeats a word ("이거는 이거는", "이건 건"): drop the echo.
+  const clean = words.filter((w, i) => i === 0 || !(w === words[i - 1] || words[i - 1].endsWith(w)));
+  const clauses: string[][] = [];
+  for (const w of clean) {
+    if (DEICTIC.test(w) || !clauses.length) clauses.push([w]);
+    else clauses.at(-1)!.push(w);
+  }
+  // Words before the first deictic word ("그리고") belong to it.
+  if (clauses.length > 1 && !DEICTIC.test(clauses[0][0])) clauses[1].unshift(...clauses.shift()!);
+  return clauses.length === marks ? clauses.map((c) => c.join(' ')) : null;
+}
+
+// Did Spark hear, mark by mark, the same words the guess assigned?
+export function specMatches(clauses: string[], edits: Edit[]) {
+  const bigrams = (s: string) => {
+    const t = s.replace(/[^가-힣a-z0-9]/gi, '');
+    return new Set(Array.from({ length: Math.max(0, t.length - 1) }, (_, i) => t.slice(i, i + 2)));
+  };
+  return clauses.every((c, i) => {
+    const e = edits.find((e) => e.mark === i + 1);
+    if (!e?.heard) return false;
+    const a = bigrams(c), b = bigrams(e.heard);
+    const shared = [...a].filter((x) => b.has(x)).length;
+    return (2 * shared) / Math.max(1, a.size + b.size) >= 0.5;
+  });
+}
+
+// Muse Image with the spoken words per mark, before Spark has answered.
+export async function museEditSpoken(image: Buffer, guide: Buffer, clauses: string[], trace?: Trace) {
+  const { width, height } = await sharp(image).metadata();
+  const lines = clauses.map((c, i) => `${i + 1}. At the ${colorNameOf(i + 1)} mark numbered ${i + 1}, the person said: "${c}"`);
+  const prompt = `Edit the first image. The second image is the same picture with numbered coloured marks. While drawing each mark, the person said (in Korean) what to change there; words like 이거/이건/여기 (this/here) and 저거/저건/저기 (that/there) mean what that mark covers, and 이쪽/저쪽 (this way) mean the direction a mark points:
+${lines.join('\n')}
+Make exactly these changes. Keep everything else exactly as in the first image: composition, framing, every other object, lighting and art style. The output must not contain any of the marks, lines or numbers from the second image.`;
+  const jpeg = (b: Buffer) => sharp(b).jpeg({ quality: 92 }).toBuffer();
+  return editImage(prompt, [await jpeg(image), await jpeg(guide)], `${width}x${height}`, trace, { output_format: 'jpeg' });
+}

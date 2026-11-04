@@ -9,10 +9,19 @@ type Stroke = {
   markId?: string; // SAM request for this mark, sent when the stroke ends
   mask?: HTMLImageElement; // SAM's outline of what the mark points at
   samDone?: boolean;
-  pointer?: boolean; // Spark says it is an arrow/direction, not an object
+  settled?: boolean; // no sheen: an arrow, "no change", or already edited locally
 };
 type Edit = { mark: number; kind?: string; target: string; instruction: string };
-type Job = { stage: string; transcript?: string; edits?: Edit[]; error?: string; resultImageId?: string; elapsedMs: number };
+type Job = {
+  stage: string;
+  transcript?: string;
+  edits?: Edit[];
+  error?: string;
+  resultImageId?: string;
+  previewImageId?: string; // instant (local) edits, before Muse Image is done
+  localMarks?: number[];
+  elapsedMs: number;
+};
 type Version = { url: string; imageId: Promise<string> };
 
 const COLORS = ['#ff3b30', '#0a84ff', '#34c759', '#ff9f0a', '#bf5af2', '#ff2d95', '#64d2ff', '#ffd60a'];
@@ -32,6 +41,7 @@ const review = $('review');
 const compare = $('compare');
 
 let image: HTMLImageElement | null = null;
+let preview: HTMLImageElement | null = null; // shown instead of `image` while the rest is edited
 let current: Version | null = null;
 const versions: Version[] = []; // earlier images, for Undo
 let strokes: Stroke[] = [];
@@ -62,6 +72,7 @@ async function setImage(url: string, imageId?: Promise<string>, keepHistory = tr
   await img.decode();
   if (keepHistory && current) versions.push(current);
   image = img;
+  preview = null;
   current = { url, imageId: imageId ?? upload(url) };
   current.imageId.catch((e) => showError(`upload failed: ${e.message}`));
   strokes = [];
@@ -136,10 +147,10 @@ function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!image) return;
   const r = fitRect();
-  ctx.drawImage(image, r.x, r.y, r.w, r.h);
+  ctx.drawImage(preview ?? image, r.x, r.y, r.w, r.h);
 
   // SAM masks: a tint in the mark's colour, plus a moving sheen while the edit runs.
-  const masks = strokes.filter((s) => s.mask && !s.pointer);
+  const masks = strokes.filter((s) => s.mask && !s.settled);
   if (masks.length) {
     ctx.globalAlpha = state === 'processing' ? 0.28 : 0.38;
     for (const s of masks) ctx.drawImage(s.mask!, r.x, r.y, r.w, r.h);
@@ -386,23 +397,36 @@ async function follow(id: string) {
     const at = SERVER_STAGES.indexOf(job.stage);
     SERVER_STAGES.forEach((name, i) => setStage(name, i < at ? 'done' : i === at ? 'active' : ''));
     if (job.transcript) caption.textContent = `“${job.transcript}”`;
-    if (job.edits && !editsEl.childElementCount) showEdits(job.edits);
+    if (job.edits && !editsEl.childElementCount) showEdits(job.edits, job.localMarks ?? []);
+    if (job.previewImageId && !preview) await showPreview(job.previewImageId, job.localMarks ?? []);
     talkLabel.textContent = `Working… ${Math.round(job.elapsedMs / 1000)} s`;
     if (job.stage === 'done') return showResult(job.resultImageId!);
     await new Promise((r) => setTimeout(r, 300));
   }
 }
 
-function showEdits(edits: Edit[]) {
+function showEdits(edits: Edit[], localMarks: number[]) {
   for (const e of edits) {
     const li = document.createElement('li');
+    li.dataset.mark = String(e.mark);
     li.innerHTML = `<b style="background:${colorOf(e.mark)}">${e.mark}</b>`;
     li.append(`${e.target} → ${e.instruction}`);
+    if (localMarks.includes(e.mark)) li.insertAdjacentHTML('beforeend', ' <i class="instant">⚡ instant</i>');
     editsEl.append(li);
     // An arrow's SAM mask is whatever it crossed: stop highlighting it.
     const s = strokes.find((s) => s.mark === e.mark);
-    if (s) s.pointer = e.kind === 'pointer' || /^no change/i.test(e.instruction);
+    if (s) s.settled = e.kind === 'pointer' || /^no change/i.test(e.instruction);
   }
+}
+
+// Local edits are done: show them now, keep the sheen on what Muse is still editing.
+async function showPreview(id: string, localMarks: number[]) {
+  const img = new Image();
+  img.src = `/api/images/${id}.jpg`;
+  await img.decode();
+  preview = img;
+  for (const s of strokes) if (localMarks.includes(s.mark)) s.settled = true;
+  draw();
 }
 
 function showError(msg: string) {

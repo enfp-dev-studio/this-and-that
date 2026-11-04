@@ -16,7 +16,8 @@ import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { transcribe, type Mask } from './meta.ts';
-import { guideImage, museEdit, pasteMarked, segmentMark, smallCopy, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { guideImage, museEdit, museEditSpoken, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandTranscript, understandVideo, type Edit, type Small } from './pipeline.ts';
+import { applyLocal } from './local.ts';
 import { audioDurationMs, colorOf, renderVideo, toWav, type Stroke } from './render.ts';
 import { Trace } from './trace.ts';
 
@@ -86,12 +87,19 @@ type Job = {
   edits?: Edit[];
   via?: string;
   resultImageId?: string;
+  previewImageId?: string; // instant edits, shown while Muse Image still works
+  localMarks?: number[];
+  speculation?: string; // right, wrong, skipped
   error?: string;
   startedAt: number;
 };
 const jobs = new Map<string, Job>();
 
-async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null) {
+// Experiments, each switchable per request (body.opts) or by env default.
+type Opts = { instant: boolean; speculate: boolean };
+const DEFAULT_OPTS: Opts = { instant: process.env.INSTANT_EDITS !== '0', speculate: process.env.SPECULATE === '1' };
+
+async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (string | undefined)[], audioBuf: Buffer | null, opts: Opts) {
   const dir = join(jobsDir, job.id);
   mkdirSync(dir, { recursive: true });
   const trace = new Trace();
@@ -118,12 +126,25 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   });
   const guide = T('guide image', () => guideImage(image, strokes));
 
+  // Speculation: start Muse Image as soon as the transcript is in, guessing
+  // that the n-th "this/that" goes with the n-th mark. Spark then checks.
+  let spec: { clauses: string[]; edited: Promise<Buffer> } | null = null;
+  if (opts.speculate) {
+    const asrResult = await asr;
+    const clauses = asrResult ? splitClauses(asrResult.transcript, strokes.length) : null;
+    if (clauses) {
+      const edited = T('muse edit (speculative)', async () => museEditSpoken(image, await guide, clauses, trace));
+      edited.catch(() => {});
+      spec = { clauses, edited };
+    }
+  }
+
   // Spark, with the transcript as a hint: on its own it sometimes mishears a
   // word (in tests "노란색" became "검은색"); with the hint it doesn't.
   const [asrResult, mp4] = await Promise.all([asr, video]);
   let edits: Edit[];
   try {
-    const r = await T('spark', () => understandVideo(mp4, strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace }));
+    const r = await T('spark', () => understandVideo(mp4, strokes, { effort: 'minimal', transcript: asrResult?.transcript, trace, ops: opts.instant }));
     edits = r.edits;
     job.transcript ||= r.transcript;
     job.via = 'spark-video';
@@ -135,11 +156,6 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   edits = edits.filter((e) => strokes.some((s) => s.mark === e.mark));
   job.edits = edits;
   writeFileSync(join(dir, 'edits.json'), JSON.stringify(edits, null, 2));
-  job.stage = 'edit';
-
-  const edited = await T('muse edit', async () => museEdit(image, await guide, edits, trace));
-  writeFileSync(join(dir, 'edited.jpg'), edited);
-  job.stage = 'paste';
 
   const results = await Promise.all(markResults);
   for (const [i, r] of results.entries()) {
@@ -149,14 +165,49 @@ async function runJob(job: Job, img: StoredImage, strokes: Stroke[], markIds: (s
   const small = results[0].small;
   const masks = new Map<number, Mask>();
   results.forEach((r, i) => r.mask && masks.set(strokes[i].mark, r.mask));
-  const { out } = await T('paste', () => pasteMarked(image, edited, strokes, { masks, width: small.width, height: small.height }, edits));
+  const seg = { masks, width: small.width, height: small.height };
+
+  // Instant edits run locally and are shown right away.
+  let generative = edits.filter((e) => !/^no change/i.test(e.instruction));
+  let local: Awaited<ReturnType<typeof applyLocal>> | null = null;
+  if (opts.instant) {
+    local = await T('local edits', () => applyLocal(image, edits, masks));
+    if (local.done.size) {
+      generative = generative.filter((e) => !local!.done.has(e.mark));
+      job.localMarks = [...local.done];
+      if (generative.length) job.previewImageId = (await storeImage(local.out, `${job.id}p`)).id;
+    } else local = null;
+  }
+
+  let out = local?.out ?? image;
+  if (generative.length) {
+    job.stage = 'edit';
+    let edited: Buffer;
+    if (spec && specMatches(spec.clauses, edits)) {
+      job.speculation = 'right';
+      edited = await spec.edited;
+    } else {
+      if (spec) job.speculation = 'wrong';
+      const genStrokes = strokes.filter((s) => generative.some((e) => e.mark === s.mark));
+      edited = await T('muse edit', async () => museEdit(image, genStrokes.length === strokes.length ? await guide : await guideImage(image, genStrokes), generative, trace));
+    }
+    if (spec === null && opts.speculate) job.speculation = 'skipped';
+    writeFileSync(join(dir, 'edited.jpg'), edited);
+    job.stage = 'paste';
+    out = (await T('paste', () => pasteMarked(image, edited, strokes, seg, generative))).out;
+    // Local edits go on top, so a generative region that overlaps them (an
+    // arrow crossing a recolored mug) can't undo them.
+    if (local) out = (await T('local edits again', () => applyLocal(out, edits, masks))).out;
+  }
+
   const result = await T('store result', () => storeImage(out, `${job.id}r`));
+  if (opts.speculate) console.log(`[${job.id}] speculation ${job.speculation ?? 'skipped'}`);
   writeFileSync(join(dir, 'result.jpg'), await sharp(result.png).jpeg({ quality: 95 }).toBuffer());
   job.resultImageId = result.id;
   job.stage = 'done';
   const totalMs = Date.now() - job.startedAt;
   console.log(`[${job.id}] done in ${totalMs} ms: ${trace.summary()}`);
-  writeFileSync(join(dir, 'trace.json'), JSON.stringify({ totalMs, spans: trace.spans, usage: trace.usage }, null, 2));
+  writeFileSync(join(dir, 'trace.json'), JSON.stringify({ totalMs, opts, speculation: job.speculation, localMarks: job.localMarks, spans: trace.spans, usage: trace.usage }, null, 2));
 }
 
 // ---------- http ----------
@@ -215,7 +266,8 @@ createServer(async (req, res) => {
       const job: Job = { id: newId(), stage: 'understand', startedAt: Date.now() };
       jobs.set(job.id, job);
       const strokes = raw.map(({ mark, points }) => scaleStroke({ mark, points }, img.k));
-      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio)).catch((e) => {
+      const opts: Opts = { ...DEFAULT_OPTS, ...(body.opts ?? {}) };
+      runJob(job, img, strokes, raw.map((s) => s.markId), decodeDataUrl(body.audio), opts).catch((e) => {
         console.error(`[${job.id}]`, e);
         job.error = String(e.message ?? e);
         job.stage = 'error';
