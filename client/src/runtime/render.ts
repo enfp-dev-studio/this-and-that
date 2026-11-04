@@ -217,6 +217,17 @@ export async function canEncodeVideo() {
   return !!(await findCodecs(768, 512)).video;
 }
 
+// The first encode of a page pays for probing the codecs and starting the
+// hardware encoder (~2 s measured); do that once while the page is idle.
+export async function warmUpVideo() {
+  try {
+    if (!(await canEncodeVideo())) return;
+    const c = canvas(64, 64);
+    ctx2d(c).fillRect(0, 0, 64, 64);
+    await renderVideo(c, [], new Int16Array(1600), { durationMs: 100 });
+  } catch {}
+}
+
 // 16 kHz PCM → Float32 at `rate` (linear).
 function resample(pcm: Int16Array, rate: number) {
   const n = Math.floor((pcm.length * rate) / 16000);

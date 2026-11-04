@@ -31,6 +31,7 @@ let passcode = (() => {
   }
 })();
 const passListeners = new Set<() => void>();
+const limitListeners = new Set<(message: string) => void>();
 
 export const getPasscode = () => passcode;
 export function setPasscode(p: string) {
@@ -43,6 +44,12 @@ export function setPasscode(p: string) {
 export function onPasscodeNeeded(f: () => void) {
   passListeners.add(f);
   return () => void passListeners.delete(f);
+}
+
+// The app shows the Worker's words when a demo limit is reached (429).
+export function onLimit(f: (message: string) => void) {
+  limitListeners.add(f);
+  return () => void limitListeners.delete(f);
 }
 
 // Refusals that a retry can't fix: no passcode, or a demo limit reached.
@@ -59,6 +66,7 @@ export async function metaFetch(path: string, init: RequestInit = {}) {
   if (res.status === 401 || res.status === 429 || res.status === 503) {
     const j: any = await res.json().catch(() => ({}));
     if (res.status === 401) passListeners.forEach((f) => f());
+    if (res.status === 429) limitListeners.forEach((f) => f(j.message ?? 'Demo limit reached.'));
     throw new ProxyError(j.message ?? (res.status === 401 ? 'Enter the demo passcode.' : `HTTP ${res.status}`), res.status);
   }
   return res;

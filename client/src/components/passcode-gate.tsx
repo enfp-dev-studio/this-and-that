@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { checkPasscode, getPasscode, onPasscodeNeeded, setPasscode } from '@/runtime/meta';
+import { toast } from 'sonner';
+import { checkPasscode, getPasscode, onLimit, onPasscodeNeeded, setPasscode } from '@/runtime/meta';
 
 // The demo runs on a shared budget behind a passcode: asked once, kept in
-// this browser, asked again whenever the proxy refuses it.
+// this browser, asked again whenever the proxy refuses it. A reached limit
+// is said in the proxy's own words.
 export function PasscodeGate() {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(getPasscode());
@@ -14,7 +16,9 @@ export function PasscodeGate() {
 
   useEffect(() => {
     checkPasscode().then((ok) => !ok && setOpen(true), () => setOpen(true));
-    return onPasscodeNeeded(() => setOpen(true));
+    const offLimit = onLimit((message) => toast.error('Demo limit reached', { id: 'limit', description: message }));
+    const offPass = onPasscodeNeeded(() => setOpen(true));
+    return () => (offLimit(), offPass());
   }, []);
 
   const submit = async (e: React.FormEvent) => {

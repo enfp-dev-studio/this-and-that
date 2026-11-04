@@ -15,11 +15,13 @@
 import { blobToDataUrl, editImage, RealtimeAsr, transcribe, type Mask, type Turn } from './meta';
 import { editAreas, findParts, guideImage, partKeywords, museEdit, museEditSpoken, museParams, partsHint, touchesAreas, type MuseMode, type Part, pasteMarked, segmentMark, smallCopy, specMatches, splitClauses, understandFrames, understandTranscript, understandVideo, type Edit, type Small } from './pipeline';
 import { applyLocal, LOCAL_OPS } from './local';
-import { audioDurationMs, canEncodeVideo, colorOf, composeWithRefs, cropAround, dataUrlOf, drawn, encode, fromPixels, jpegUrl, keyFrames, maxVolumeDb, outlineImage, pixels, renderVideo, toWav, type Source, type Stroke } from './render';
+import { audioDurationMs, canEncodeVideo, warmUpVideo, colorOf, composeWithRefs, cropAround, dataUrlOf, drawn, encode, fromPixels, jpegUrl, keyFrames, maxVolumeDb, outlineImage, pixels, renderVideo, toWav, type Source, type Stroke } from './render';
 import { Trace } from './trace';
 import { put, saveBlob } from './store';
 
 const MAX_SIDE = 2048;
+// Probe the video codecs and wake the encoder before the first edit needs them.
+setTimeout(warmUpVideo, 1500);
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 // ---------- images ----------

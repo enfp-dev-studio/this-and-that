@@ -86,6 +86,7 @@ for (let run = 1; run <= runs; run++) for (const name of clips) {
     log(`\n${name} run ${run}: release→result ${r.total} ms, edits shown ${r.editsAt} ms, instant preview ${r.previewAt || '-'} ms, local ${JSON.stringify(r.job.localMarks ?? [])}, asr ${r.job.asrVia}, via ${r.job.via}, speculation ${r.job.speculation ?? '-'}, mapping ${ok ? 'RIGHT' : 'WRONG ' + JSON.stringify(right)}`);
     log(`  transcript: ${r.job.transcript}`);
     for (const s of [...t.spans].sort((a: any, b: any) => a.start - b.start)) log(`  ${s.name.padEnd(26)} @${String(s.start).padStart(6)} +${s.ms}`);
+    for (const u of t.usage) if (/spark|image/.test(u.name)) log(`  usage ${u.name}: ${JSON.stringify(u.usage)}`);
     for (const e of r.job.edits ?? []) log(`  ${e.mark}. ${e.target} → ${e.instruction}${e.op ? ` [${e.op} ${e.color || ''} ${e.amount ?? ''}]` : ''}`);
     const museSpan = t.spans.find((s: any) => s.name.startsWith('muse edit'));
     results.push({ clip: name, run, total: r.total, editsAt: r.editsAt, previewAt: r.previewAt, museMs: museSpan?.ms ?? null, sparkMs: t.spans.find((s: any) => s.name === 'spark')?.ms ?? null, videoMs: t.spans.find((s: any) => s.name === 'render video')?.ms ?? null, pasteMs: t.spans.find((s: any) => s.name === 'paste')?.ms ?? null, local: r.job.localMarks ?? [], via: r.job.via, asr: r.job.asrVia, mapping: ok });

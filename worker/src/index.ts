@@ -86,7 +86,9 @@ export default {
       }
       const limited = await limit(env, ip, REALTIME_UNITS, cors);
       if (limited) return limited;
-      return relayRealtime(env, ctx, pass.protocol, cors);
+      // A client that offered a ttpass.* subprotocol fails the handshake unless
+      // one is echoed, even when the header or cookie is what let it in.
+      return relayRealtime(env, ctx, pass.protocol ?? offeredProtocol(request), cors);
     }
 
     if (request.method !== 'GET' && request.method !== 'POST') return methodNotAllowed(cors);
@@ -153,6 +155,11 @@ async function checkPasscode(request: Request, secret: string): Promise<{ ok: bo
     if (value !== null && (await sameSecret(value, secret))) return { ok: true, protocol };
   }
   return { ok: false, protocol: null };
+}
+
+function offeredProtocol(request: Request): string | null {
+  const entry = (request.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map((e) => e.trim()).find((e) => e.startsWith('ttpass.'));
+  return entry ?? null;
 }
 
 async function sameSecret(a: string, b: string): Promise<boolean> {
