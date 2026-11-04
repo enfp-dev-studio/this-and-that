@@ -18,8 +18,9 @@ export default defineConfig({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
-    // The surface-edit page (3D model + the 2D pipeline) ships next to the app.
-    rollupOptions: { input: { main: fileURLToPath(new URL('./client/index.html', import.meta.url)), surface: fileURLToPath(new URL('./client/surface.html', import.meta.url)) } },
+    // Only the app: surface edits now run inside its 3D mode; the standalone
+    // surface-edit page (client/surface.html) is a lab page for the dev server.
+    rollupOptions: { input: { main: fileURLToPath(new URL('./client/index.html', import.meta.url)) } },
   },
   // The pixels worker (instant edits, paste-back) is an ES module.
   worker: { format: 'es' },

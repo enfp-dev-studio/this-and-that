@@ -17,6 +17,8 @@ import { watchTheme } from '../editor/colors';
 import { paintModel, perceive } from '../runtime/perceive';
 import { countJob, limits, ProxyError } from '../runtime/meta';
 import { put } from '../runtime/store';
+import { runtime } from '../runtime';
+import { SurfaceBaker } from '../surface/bake';
 
 export type ViewName = 'front' | 'side' | 'top' | 'three';
 export type Snapshot3D = {
@@ -50,6 +52,9 @@ class Engine3D {
   private imported: THREE.Object3D | null = null; // a .glb opened as a reference to sketch over
   // An opened model as a part Spark edits around (kept as is, never rebuilt): set by loadModel.
   private importedPart: Part | null = null;
+  // Surface edits on the opened model: the 2D pipeline on the view, baked into its textures.
+  private baker: SurfaceBaker | null = null;
+  private surfaceEdits = 0;
   private stage: Stage | null = null;
   private sketch!: Sketch;
   private builder!: Builder;
@@ -92,7 +97,7 @@ class Engine3D {
       // After a build the model turns slowly until the user touches the scene.
       stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
       this.highlightOnHover(stage);
-      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), loadModel: (url: string, name?: string, height?: number) => this.loadModel(url, name, height), drawGuides: (view: ViewName, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
+      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), loadModel: (url: string, name?: string, height?: number) => this.loadModel(url, name, height), drawGuides: (view: ViewName | null, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
     }
     return () => {};
   }
@@ -239,6 +244,81 @@ class Engine3D {
     });
   }
 
+  // Marks drawn ON the opened model with a request to change its look
+  // (engrave, recolor, a pattern, "this shape") edit its texture; strokes off
+  // it, or "add … here", make parts that follow them.
+  private surfaceRoute(strokes: Stroke[], transcript: string) {
+    if (!this.imported || !strokes.length || !strokes.every((s) => s.plane === 'surface')) return false;
+    return !/^\s*(add|attach|put|give|grow|stick|place)\b/i.test(transcript) && !/\b(horns?|wings?|tail|spikes?|handle|guard)\b/i.test(transcript);
+  }
+
+  // The current view through the 2D pipeline (render, marks, words → Spark,
+  // SAM, Muse Image, pasted back only inside the marks), then baked into the
+  // model's base-color (and emissive) texture (surface/bake.ts).
+  private async surfaceEdit(strokes: Stroke[], transcript: string) {
+    const stage = this.stage!, canvas = stage.renderer.domElement;
+    let mesh: THREE.Mesh | null = null;
+    this.imported!.traverse((o) => !mesh && (o as THREE.Mesh).isMesh && (mesh = o as THREE.Mesh));
+    if (!mesh) return this.onNotice('This model has no surface to paint.');
+    if (!transcript) return this.onNotice('Say or type what to change there.');
+    if (!this.baker || (this.baker as any).mesh !== mesh) this.baker = new SurfaceBaker(stage.renderer, mesh);
+    this.busy = true;
+    this.set({ thinking: true, caption: `“${transcript}”` });
+    this.status('Looking at the surface', true);
+    const t0 = performance.now();
+    try {
+      stage.controls.autoRotate = false;
+      stage.controls.update();
+      // The view as it is, without the strokes (they go as marks), and once more without glow (the bake's lighting reference).
+      const scene = stage.scene;
+      const hidden = [stage.sketch, stage.helpers].map((o) => [o, o.visible] as const);
+      for (const [o] of hidden) o.visible = false;
+      stage.renderer.render(scene, stage.camera);
+      const blob = await new Promise<Blob>((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error('no image'))), 'image/png'));
+      const material = (mesh as THREE.Mesh).material as THREE.MeshStandardMaterial;
+      const glow = material.emissiveIntensity;
+      material.emissiveIntensity = 0;
+      stage.renderer.render(scene, stage.camera);
+      const plain = await createImageBitmap(canvas);
+      material.emissiveIntensity = glow;
+      for (const [o, v] of hidden) o.visible = v;
+      const cam = stage.camera.clone();
+      const marks = strokes.map((s, k) => ({
+        mark: k + 1,
+        points: s.points.map((p, i) => {
+          const v = p.clone().project(cam);
+          return { x: ((v.x + 1) / 2) * canvas.width, y: ((1 - v.y) / 2) * canvas.height, t: k * 1500 + i * 20 };
+        }),
+      }));
+      const { imageId } = await runtime.uploadImage(blob);
+      const { id } = runtime.startJob({ imageId, strokes: marks, pcm: null, asr: null, text: transcript });
+      let job = runtime.job(id)!;
+      while (job.stage !== 'done' && job.stage !== 'error') {
+        this.status(`Editing the surface · ${((performance.now() - t0) / 1000).toFixed(0)} s`, true);
+        await new Promise((r) => setTimeout(r, 250));
+        job = runtime.job(id)!;
+      }
+      if (job.stage === 'error') throw new Error(job.error);
+      const rendered = runtime.bitmap(imageId), edited = runtime.bitmap(job.resultImageId!);
+      if (!rendered || !edited) throw new Error('the edited view is missing');
+      this.baker.bake(cam, rendered, plain, edited);
+      this.surfaceEdits++;
+      while (this.sketch.current().length) this.sketch.undo();
+      const ms = performance.now() - t0;
+      const said = job.edits?.map((e) => e.instruction).join('; ') || transcript;
+      this.set({ result: { say: said, parts: [], ms } });
+      this.status(`On the surface · ${(ms / 1000).toFixed(1)} s · turn it around · Undo restores it`);
+      (window as any).lastSurface = { ms, edits: job.edits };
+    } catch (e) {
+      this.status(IDLE);
+      this.onError(`That surface edit didn’t come through: ${String(e).slice(0, 160)}`);
+    } finally {
+      this.busy = false;
+      this.set({ thinking: false });
+      this.sync();
+    }
+  }
+
   // The model as a binary glTF (.glb) download.
   async exportGlb() {
     if (!this.stage || !this.builder.parts.length) return;
@@ -263,6 +343,8 @@ class Engine3D {
     if (this.imported) this.stage!.model.remove(this.imported);
     this.imported = null;
     this.importedPart = null;
+    this.baker = null;
+    this.surfaceEdits = 0;
     this.builds.length = 0;
     this.redos = [];
     this.sketch.round = 1;
@@ -346,7 +428,8 @@ class Engine3D {
       const snapped = !!last.raw;
       this.sketch.undo();
       if (!snapped) this.redos.push({ kind: 'stroke', stroke: last });
-    } else this.undoBuild();
+    } else if (this.surfaceEdits && this.baker?.undo()) this.surfaceEdits--;
+    else this.undoBuild();
     this.sync();
   }
 
@@ -411,6 +494,7 @@ class Engine3D {
     if (this.busy || !this.stage) return;
     const stage = this.stage, sketch = this.sketch, builder = this.builder;
     const editing = builder.parts.length > 0 || !!this.importedPart;
+    if (this.surfaceRoute(editing ? sketch.current() : sketch.strokes, transcript)) return this.surfaceEdit(sketch.current(), transcript);
     // The opened model goes in as a part Spark keeps (the builder never draws it).
     const current = this.importedPart && !builder.parts.some((p) => p.primitive === 'mesh') ? [this.importedPart, ...builder.parts] : builder.parts;
     const strokes = editing ? sketch.current() : sketch.strokes;
@@ -544,13 +628,16 @@ class Engine3D {
   // 3D polylines drawn with pen events from a named view, the caption showing
   // what is said (a stroke that starts on the model is drawn on its surface).
   // With make(), the replay harness for any sketch and edit.
-  async drawGuides(view: ViewName, strokes: number[][][], caption = '') {
+  // `view` null: from where the camera is.
+  async drawGuides(view: ViewName | null, strokes: number[][][], caption = '') {
     const stage = this.stage!;
     stage.controls.autoRotate = false;
-    const f0 = stage.frames;
-    await new Promise((r) => setTimeout(r, 100));
-    stage.goTo(view, stage.frames - f0 < 4);
-    await new Promise((r) => setTimeout(r, 650));
+    if (view) {
+      const f0 = stage.frames;
+      await new Promise((r) => setTimeout(r, 100));
+      stage.goTo(view, stage.frames - f0 < 4);
+      await new Promise((r) => setTimeout(r, 650));
+    }
     if (caption) this.set({ caption });
     for (const pts of strokes) await penStroke(stage, pts.map(([x, y, z]) => screenOf(stage, x, y, z)), 300 + 60 * pts.length);
   }

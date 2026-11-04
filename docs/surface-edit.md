@@ -2,7 +2,7 @@
 
 Draw on a textured glTF model and say what to change ("여기에 빨간 초승달 엠블럼을 새겨 줘"); only the marked part of its texture changes, and the change stays on the surface from every angle. It is the 2D feature run on a rendered view of the model, then baked back into the model's textures.
 
-Page: `client/surface.html` (`client/src/surface/`). Model: `samples/3d/SciFiHelmet/`, the same copy as 3D mode's sample model, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
+In the app: 3D mode, Open → Sample model, then draw on the model and say the change; marks on its surface with a request to change its look go this way (strokes off it, or "add … here", make parts). Lab page (dev server only, not in the build): `client/surface.html` (`client/src/surface/`). Model: `samples/3d/SciFiHelmet/`, the same copy as 3D mode's sample model, from the [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/SciFiHelmet) (textures resized to 1024 px; its `README.md` and `LICENSE.md` are kept beside it):
 
 > © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Michael Pavlovic for Everything
 > © 2017, Public. [Creative Commons Zero v1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode) — Norbert Nopper for Conversion to glTF
