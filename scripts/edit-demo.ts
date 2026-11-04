@@ -514,11 +514,12 @@ await card(
 );
 // next: 3D
 await card([{ text: 'The same gesture, on a 3D model.', size: 72, weight: 600 }, { text: 'Draw the shape on it and say what it is: the strokes become the parts.', size: 44, color: gray }], 3.5);
-if (existsSync(join(demo, 'model3d.timing.json'))) {
-  // A detailed model opened (the Sample model), horns drawn on it and said, then
-  // a wing outline: the parts follow the strokes. No paint: it would repaint the
-  // model's own textures.
-  const t = timing('model3d');
+// A detailed model opened (a sample model: the sword, else the helmet), parts
+// drawn on it and said: they follow the strokes. No paint: it would repaint the
+// model's own textures.
+const take3d = existsSync(join(demo, 'sword.timing.json')) ? 'sword' : 'model3d';
+if (existsSync(join(demo, `${take3d}.timing.json`))) {
+  const t = timing(take3d);
   const steps = t.steps!;
   const zoom: Key[] = [{ t: 0, z: 1.08, x: 800, y: 470 }];
   const segs: Seg[] = [];
@@ -528,7 +529,7 @@ if (existsSync(join(demo, 'model3d.timing.json'))) {
     at = st.done + 1.1;
   }
   segs.push({ from: at, to: Math.min(t.paint! - 0.6, at + 3.2) });
-  await clip('model3d', { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
+  await clip(take3d, { real: 0, fastUntil: 0, segs, subs: speech(t), zoom, voice: { file: t.voice, at: t.voiceAt } });
 }
 await card(
   [
@@ -537,7 +538,7 @@ await card(
     { text: 'Show it. Say it. Done.', size: 46, color: gray, gap: 44 },
     { text: 'Built with Meta’s Muse models', size: 38, color: gray },
     { text: 'github.com/enfp-dev-studio/this-and-that', size: 38, color: gray },
-    { text: '3D sample model: “SciFiHelmet” by Michael Pavlovic, CC0 (Khronos glTF Sample Assets)', size: 26, color: gray, gap: 28 },
+    { text: take3d === 'sword' ? '3D sample model: “Antique Estoc” by Ulan Cabanilla and James Ray Cock, Poly Haven, CC0' : '3D sample model: “SciFiHelmet” by Michael Pavlovic, CC0 (Khronos glTF Sample Assets)', size: 26, color: gray, gap: 28 },
   ],
   6,
 );

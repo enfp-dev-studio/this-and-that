@@ -463,17 +463,32 @@ async function sceneHelmet(page: Page, rec: Recorder) {
 
 // Editing a high-quality model: the Sample model (SciFiHelmet) opened from the
 // menu, horns drawn on it and said, then a wing outline, then painted.
-async function sceneModel3d(page: Page, rec: Recorder) {
+type Steps = { say: string; draw: readonly (readonly ['front' | 'side', number[][][]])[] }[];
+// The sword (stands 0.9 m, pommel down): a wider, swept guard drawn across the
+// old one, then a flame outline up the blade's edge.
+function swordSteps([x0, y0, z0]: number[], [x1, y1, z1]: number[]): Steps {
+  const cz = (z0 + z1) / 2, h = y1 - y0;
+  const at = (x: number, v: number) => [x, y0 + v * h, cz];
+  const guard = [[-0.17, 0.3], [-0.12, 0.25], [-0.05, 0.233], [0, 0.236], [0.05, 0.233], [0.12, 0.25], [0.17, 0.3]].map(([x, v]) => at(x, v));
+  const flame = [[0.012, 0.27], [0.065, 0.34], [0.03, 0.37], [0.085, 0.46], [0.04, 0.49], [0.095, 0.59], [0.04, 0.62], [0.075, 0.71], [0.02, 0.75], [0.012, 0.6], [0.012, 0.42], [0.012, 0.28]].map(([x, v]) => at(x, v));
+  return [
+    { say: 'Make the guard this shape.', draw: [['front', [guard]]] },
+    { say: 'Add flames along this edge, like this.', draw: [['front', [flame]]] },
+  ];
+}
+
+async function sceneModel3d(page: Page, rec: Recorder, which: 'helmet' | 'sword' = 'helmet') {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.locator('[role=radio][aria-label="3D"]').click();
   await page.waitForFunction(() => !!(window as any).drawGuides && !!document.querySelector('canvas'), undefined, { timeout: 60_000 });
   await sleep(1200);
-  await rec.start('model3d');
+  const name = which === 'sword' ? 'sword' : 'model3d';
+  await rec.start(name);
   await sleep(600);
   const voiceAt = Date.now() / 1000;
   await page.locator('button:has-text("Open")').click();
   await sleep(500);
-  await page.locator('text=Sample model').click();
+  await page.locator(`text=Sample model: a ${which === 'sword' ? 'sword' : 'sci-fi helmet'}`).click();
   await page.waitForFunction(() => (window as any).stage?.model.children.some((c: any) => c.type === 'Group' && c.children.length), undefined, { timeout: 30_000 });
   await sleep(800);
   // Framed close, turning a moment.
@@ -482,7 +497,7 @@ async function sceneModel3d(page: Page, rec: Recorder) {
     const b = new THREE.Box3().setFromObject(stage.model);
     const c = b.getCenter(new THREE.Vector3());
     stage.controls.target.set(c.x, c.y + 0.08, c.z);
-    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(1.25);
+    const d = stage.camera.position.clone().sub(stage.controls.target).normalize().multiplyScalar(2.5 * (b.max.y - b.min.y));
     stage.camera.position.copy(stage.controls.target).add(d);
     Object.assign(stage.controls, { autoRotate: true, autoRotateSpeed: 2.2 });
     stage.controls.update();
@@ -493,10 +508,13 @@ async function sceneModel3d(page: Page, rec: Recorder) {
   const [w, h, d] = [x1 - x0, y1 - y0, z1 - z0], [cx, cy, cz] = [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2];
   const horns = [-1, 1].map((k) => [[0.5, -0.25], [0.62, -0.1], [0.72, 0.08], [0.74, 0.28], [0.66, 0.45]].map(([u, v]) => [cx + k * u * w, y1 + v * h, cz]));
   const wing = [[0.05, -0.2], [0.4, -0.45], [0.75, -0.95], [0.5, -0.85], [0.45, -1.15], [0.25, -0.9], [0.05, -1.05], [-0.05, -0.6], [0.02, -0.25]].map(([v, u]) => [x1 - 0.01, cy + v * h, cz + u * d]);
-  const steps = [
-    { say: 'Add horns like this.', draw: [['front', horns]] as const },
-    { say: 'Add wings here.', draw: [['side', [wing]]] as const },
-  ];
+  const steps: Steps =
+    which === 'sword'
+      ? swordSteps(bb.min, bb.max)
+      : [
+          { say: 'Add horns like this.', draw: [['front', horns]] },
+          { say: 'Add wings here.', draw: [['side', [wing]]] },
+        ];
   const done: { say: number; release: number; done: number; parts: string }[] = [];
   for (const [i, st] of steps.entries()) {
     if (i) await sleep(2600);
@@ -506,7 +524,7 @@ async function sceneModel3d(page: Page, rec: Recorder) {
     await page.evaluate((text) => (window as any).make(text), st.say);
     const parts = await page.evaluate(() => (window as any).builder.parts.map((p: any) => `${p.name}:${p.primitive}`).join(', '));
     done.push({ say, release, done: Date.now() / 1000, parts });
-    log(`model3d: "${st.say}" ${(Date.now() / 1000 - release).toFixed(1)} s → ${parts}`);
+    log(`${name}: "${st.say}" ${(Date.now() / 1000 - release).toFixed(1)} s → ${parts}`);
   }
   await sleep(3000);
   const pb = (await page.locator('button:has-text("Paint")').boundingBox())!;
@@ -519,19 +537,19 @@ async function sceneModel3d(page: Page, rec: Recorder) {
   await page.waitForSelector('text=Muse Image is painting', { timeout: 10_000 }).catch(() => {});
   const painted = await page.waitForSelector('text=Muse Image is painting', { state: 'detached', timeout: 120_000 }).then(() => true, () => false);
   const paintedAt = Date.now() / 1000;
-  log(`model3d: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
+  log(`${name}: painted ${painted} ${(paintedAt - paintAt).toFixed(1)} s`);
   await page.evaluate(() => Object.assign((window as any).stage.controls, { autoRotate: true, autoRotateSpeed: 1.6 }));
   await sleep(5500);
-  const zero = await rec.stop('model3d');
+  const zero = await rec.stop(name);
   const speech: Spoken[] = [];
   for (const [i, st] of steps.entries()) {
-    const f = join(clipDir, `model3d-${i}.aiff`);
+    const f = join(clipDir, `${name}-${i}.aiff`);
     execFileSync('say', ['-v', VOICE, '-o', f, st.say]);
     speech.push({ at: done[i].say - voiceAt + 0.3, dur: (await audioDurationMs(f)) / 1000, say: st.say });
   }
-  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...speech.flatMap((_, i) => ['-i', join(clipDir, `model3d-${i}.aiff`)]), '-filter_complex', `${speech.map((p, i) => `[${i}:a]adelay=${Math.round(p.at * 1000)}|${Math.round(p.at * 1000)}[a${i}]`).join(';')};${speech.map((_, i) => `[a${i}]`).join('')}amix=inputs=${speech.length}:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, 'model3d.wav')]);
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...speech.flatMap((_, i) => ['-i', join(clipDir, `${name}-${i}.aiff`)]), '-filter_complex', `${speech.map((p, i) => `[${i}:a]adelay=${Math.round(p.at * 1000)}|${Math.round(p.at * 1000)}[a${i}]`).join(';')};${speech.map((_, i) => `[a${i}]`).join('')}amix=inputs=${speech.length}:normalize=0[o]`, '-map', '[o]', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', join(clipDir, `${name}.wav`)]);
   const rel = (t: number) => t - zero;
-  writeFileSync(join(out, 'model3d.timing.json'), JSON.stringify({ voice: join(clipDir, 'model3d.wav'), voiceAt: voiceAt - zero, release: rel(done[0].release), result: rel(done[0].done), steps: done.map((x) => ({ say: rel(x.say), release: rel(x.release), done: rel(x.done), parts: x.parts })), paint: rel(paintAt), painted: rel(paintedAt), speech }, null, 1));
+  writeFileSync(join(out, `${name}.timing.json`), JSON.stringify({ voice: join(clipDir, `${name}.wav`), voiceAt: voiceAt - zero, release: rel(done[0].release), result: rel(done[0].done), steps: done.map((x) => ({ say: rel(x.say), release: rel(x.release), done: rel(x.done), parts: x.parts })), paint: rel(paintAt), painted: rel(paintedAt), speech }, null, 1));
   return painted ? 'result' : 'failed';
 }
 
@@ -655,6 +673,7 @@ for (const name of wanted) {
     else if (name === 'chair') results[name] = await sceneChair(page, cdp, rec);
     else if (name === 'helmet') results[name] = await sceneHelmet(page, rec);
     else if (name === 'model3d') results[name] = await sceneModel3d(page, rec);
+    else if (name === 'sword') results[name] = await sceneModel3d(page, rec, 'sword');
     else results[name] = await scene2d(page, cdp, rec, name);
   } catch (e: any) {
     results[name] = `error: ${String(e?.message ?? e).split('\n')[0]}`;
