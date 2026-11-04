@@ -22,7 +22,7 @@ export type StrokeInfo = {
 };
 export type Part = {
   name: string;
-  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude';
+  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane';
   center: number[];
   size: number[];
   rotation: number[];
@@ -30,6 +30,9 @@ export type Part = {
   material: string;
   strokes: number[];
   profile: number;
+  path?: number[][]; // tube: control points from its base (the center), in the part's frame
+  radii?: number[]; // tube: [base, tip] radius
+  outline?: number[][]; // membrane: its flat outline, [x, y] in the part's frame, from its root (the center)
 };
 export type Answer = { subject: string; say: string; parts: Part[] };
 
@@ -46,10 +49,10 @@ const SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['name', 'primitive', 'center', 'size', 'rotation', 'color', 'material', 'strokes', 'profile'],
+        required: ['name', 'primitive', 'center', 'size', 'rotation', 'color', 'material', 'strokes', 'profile', 'path', 'radii', 'outline'],
         properties: {
           name: { type: 'string' },
-          primitive: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'cone', 'capsule', 'extrude'] },
+          primitive: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'cone', 'capsule', 'extrude', 'tube', 'membrane'] },
           center: vec3,
           size: vec3,
           rotation: vec3,
@@ -57,6 +60,9 @@ const SCHEMA = {
           material: { type: 'string', enum: ['wood', 'metal', 'plastic', 'fabric', 'stone', 'glass', 'ceramic', 'plant', 'paint'] },
           strokes: { type: 'array', items: { type: 'integer' } },
           profile: { type: 'integer' },
+          path: { type: 'array', items: vec3 },
+          radii: { type: 'array', items: { type: 'number' } },
+          outline: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 } },
         },
       },
     },
@@ -72,16 +78,19 @@ How strokes are made: each stroke lies on a flat drawing plane. For plane "view"
 Images: the strokes from several viewpoints, each stroke in its own color with its id number at its middle. A gray model in the images is the current model, which the user is now editing.
 
 Parts:
-- primitive: box, cylinder, sphere, cone, capsule or extrude.
+- primitive: box, cylinder, sphere, cone, capsule, extrude, tube or membrane.
 - center [x,y,z]; size [x,y,z] = full extents in the part's own frame before rotation. Cylinders, cones and capsules have their axis along their own Y: size[1] = length, size[0] = size[2] = diameter; a cone's tip points to its +Y.
 - rotation [x,y,z] in degrees, Euler XYZ; [0,0,0] when axis-aligned. Tilt only what is drawn tilted (a reclined back, a roof slope). Signs: a positive X rotation tips an upright part's top toward +Z (the front), so a chair back reclining backward has a negative X rotation; a positive Z rotation tips the top toward -X.
 - extrude: a flat slab whose outline is one closed stroke (a house's gable wall, a sign, a leaf, a letter). profile = that stroke id, size[2] = thickness, center = where the outline's middle should end up (move it to the right depth); its rotation is ignored. profile = -1 for every other primitive.
+- tube: a smooth, tapered horn, tail, tentacle, antenna or handle. center = its base, where it attaches to the model; path = 3 to 6 control points [x,y,z] relative to the base, from [0,0,0] to the tip, a clean smooth curve (take only the bend and direction from the strokes, never their wobble); radii = [base radius, tip radius]; size = the extents of the whole tube; rotation [0,0,0]. path = [] and radii = [] for every other primitive.
+- membrane: a thin curved sheet: a wing, fin, ear, sail or cape. center = its root, where it attaches; outline = 5 to 12 [x,y] points of its flat shape in its own plane (x along its span, away from the body; y up), relative to the root, a clean well-proportioned silhouette (a bat or feathered wing: a long leading edge, a scalloped trailing edge); size[2] = thickness (about 0.01); rotation turns that plane into place. outline = [] for every other primitive. Pairs (left and right wings, horns, ears) mirror each other.
 - color: a plausible real color as #rrggbb (the stroke colors in the images are only labels, never the object's colors) (wood brown, red roof, green leaves), or the color the user asks for. material: the closest hint.
 - strokes: the ids of the strokes this part explains. Every stroke is explained by some part, except pure gestures (a circle around a part or an arrow, meaning "this one").
 - A stroke with "pen": "point" was drawn with the Point pen: it only marks an existing part or place ("this one"), never new geometry. "pen": "shape" (Shape pen) means it draws geometry to follow, even over an existing part. Without "pen", decide from the drawing and the words.
 - Follow the drawing: lines drawn as separate posts, legs or rails become separate thin parts; a closed outline becomes a panel or slab. Anything the user names (roof, backrest, handle, door) gets its own part, so it can be colored and edited.
 - Complete what a real object of that kind needs even if only one side was drawn (the hidden legs of a chair, mirrored), but keep it simple: 3 to 16 parts. Parts should touch where they connect; nothing floats and nothing is left open (a gable roof needs its triangular gable ends: an extrude of the outline stroke, or a box rotated 45° about the ridge axis).
 - Editing: return the full updated list. Keep unchanged parts exactly as they were (same name, same numbers). "this" / "here" / "이거" / "여기" means the part or place the new strokes touch.
+- Strokes are guides, not geometry to trace: they say where a part goes and roughly its form (curved or straight, tall or low). Design a clean, well-proportioned part of the kind asked for, attached to the model there. Add as many as the words mean: "horns" or "wings" on a head or body = a mirrored pair, even if one side was drawn; never duplicates.
 
 subject: what it is, a few English words. say: one short, friendly Korean sentence about what you made or changed.
 

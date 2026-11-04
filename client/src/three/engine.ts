@@ -90,7 +90,7 @@ class Engine3D {
       // After a build the model turns slowly until the user touches the scene.
       stage.renderer.domElement.addEventListener('pointerdown', () => (stage.controls.autoRotate = false));
       this.highlightOnHover(stage);
-      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), quickShapeDemo: () => this.quickShapeDemo() });
+      Object.assign(window, { THREE, stage, sketch: this.sketch, builder: this.builder, demoChair: () => this.demoChair(), demoHouse: () => this.demoHouse(), replayChair: (say?: string) => this.replayChair(say), drawGuides: (view: ViewName, strokes: number[][][], caption?: string) => this.drawGuides(view, strokes, caption), make: (text?: string) => this.make(text), quickShapeDemo: () => this.quickShapeDemo() });
     }
     return () => {};
   }
@@ -464,6 +464,20 @@ class Engine3D {
     await settle('three');
     this.set({ caption: `“${say}”` });
     await this.perceive(say);
+  }
+
+  // 3D polylines drawn with pen events from a named view, the caption showing
+  // what is said (a stroke that starts on the model is drawn on its surface).
+  // With make(), the replay harness for any sketch and edit.
+  async drawGuides(view: ViewName, strokes: number[][][], caption = '') {
+    const stage = this.stage!;
+    stage.controls.autoRotate = false;
+    const f0 = stage.frames;
+    await new Promise((r) => setTimeout(r, 100));
+    stage.goTo(view, stage.frames - f0 < 4);
+    await new Promise((r) => setTimeout(r, 650));
+    if (caption) this.set({ caption });
+    for (const pts of strokes) await penStroke(stage, pts.map(([x, y, z]) => screenOf(stage, x, y, z)), 300 + 60 * pts.length);
   }
 
   // QuickShape before/after: the same wobbly shapes drawn twice, lifted at once

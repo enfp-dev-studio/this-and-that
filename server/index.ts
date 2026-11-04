@@ -384,10 +384,30 @@ function sendFile(res: ServerResponse, path: string) {
   sendBytes(res, TYPES[extname(path)] ?? 'application/octet-stream', readFileSync(path));
 }
 
+const META_ROUTES = ['chat/completions', 'responses', 'images/edits', 'asr/transcribe'];
+async function metaProxy(req: IncomingMessage, res: ServerResponse, path: string, search: string) {
+  if (path === 'config') return send(res, 200, { passcode: false, limits: { maxMarks: 6, maxRecordingSeconds: 20, maxImageSide: 2048 } });
+  if (path === 'check' || path === 'job') return send(res, 200, { ok: true });
+  if (!META_ROUTES.includes(path) || req.method !== 'POST') return send(res, 404, { error: 'not found' });
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const headers: Record<string, string> = { Authorization: `Bearer ${process.env.MODEL_API_KEY}` };
+  for (const name of ['content-type', 'accept']) if (req.headers[name]) headers[name] = String(req.headers[name]);
+  const up = await fetch(`https://api.meta.ai/v1/${path}${search}`, { method: 'POST', headers, body: Buffer.concat(chunks) });
+  res.writeHead(up.status, { 'Content-Type': up.headers.get('content-type') ?? 'application/json', 'Cache-Control': 'no-cache' });
+  // Streamed through (SSE for Spark and SAM).
+  if (up.body) for await (const c of up.body as any) res.write(c);
+  res.end();
+}
+
 createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean);
   try {
+    // The web app's model calls (client/src/runtime) when it is served from here:
+    // what the Worker's /api/meta proxy does, without its passcode and daily
+    // caps, the key added here from .env (never sent to the browser).
+    if (parts[0] === 'api' && parts[1] === 'meta') return metaProxy(req, res, parts.slice(2).join('/'), url.search);
     // 3D sketch mode (beta).
     if (parts[0] === 'api' && parts[1] === '3d') {
       if (!(await handle3d(req, res, parts))) send(res, 404, { error: 'no such 3d route' });

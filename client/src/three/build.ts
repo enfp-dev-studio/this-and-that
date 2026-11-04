@@ -9,7 +9,7 @@ import { fixRotation } from './fit';
 
 export type Part = {
   name: string;
-  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude';
+  primitive: 'box' | 'cylinder' | 'sphere' | 'cone' | 'capsule' | 'extrude' | 'tube' | 'membrane';
   center: number[];
   size: number[];
   rotation: number[];
@@ -17,6 +17,9 @@ export type Part = {
   material: string;
   strokes: number[];
   profile: number;
+  path?: number[][]; // tube: control points from its base (the center)
+  radii?: number[]; // tube: [base, tip] radius
+  outline?: number[][]; // membrane: [x, y] outline from its root (the center)
 };
 
 const FINISH: Record<string, { roughness: number; metalness: number }> = {
@@ -57,6 +60,16 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
       g.scale(sx / (2 * r), 1, sz / (2 * r));
       return g;
     }
+    case 'tube': {
+      const path = (p.path ?? []).filter((q) => q.length === 3);
+      if (path.length >= 2) return taperedTube(path, pos(p.radii?.[0] ?? sx / 2), pos(p.radii?.[1] ?? 0.004));
+      return new THREE.ConeGeometry(sx / 2, sy, 10, 1);
+    }
+    case 'membrane': {
+      const outline = (p.outline ?? []).filter((q) => q.length === 2);
+      if (outline.length >= 3) return membrane(outline, sz);
+      return new THREE.BoxGeometry(sx, sy, sz);
+    }
     case 'extrude': {
       const s = strokes.get(p.profile);
       if (s && s.points.length >= 3) return extrudeFromStroke(s, sz);
@@ -65,6 +78,42 @@ function geometryOf(p: Part, strokes: Map<number, Stroke>): THREE.BufferGeometry
     default:
       return new THREE.BoxGeometry(sx, sy, sz);
   }
+}
+
+// A horn or tail: a sweep along a smooth curve through the control points,
+// narrowing from the base radius to the tip.
+function taperedTube(path: number[][], base: number, tip: number) {
+  const curve = new THREE.CatmullRomCurve3(path.map((q) => new THREE.Vector3(...q)), false, 'centripetal');
+  const n = 40, radial = 12;
+  const g = new THREE.TubeGeometry(curve, n, 1, radial, false);
+  const at = g.getAttribute('position');
+  const v = new THREE.Vector3();
+  for (let i = 0; i <= n; i++) {
+    const c = curve.getPointAt(i / n);
+    const r = base + (tip - base) * Math.pow(i / n, 0.9);
+    for (let j = 0; j <= radial; j++) {
+      const k = i * (radial + 1) + j;
+      v.fromBufferAttribute(at, k).sub(c).multiplyScalar(r).add(c);
+      at.setXYZ(k, v.x, v.y, v.z);
+    }
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+// A wing or fin: the outline as a thin sheet, cupped a little along its span.
+function membrane(outline: number[][], thickness: number) {
+  const shape = new THREE.Shape(outline.map(([x, y]) => new THREE.Vector2(x, y)));
+  const g = new THREE.ExtrudeGeometry(shape, { depth: Math.max(0.004, thickness), bevelEnabled: false, curveSegments: 4 });
+  g.translate(0, 0, -Math.max(0.004, thickness) / 2);
+  const span = Math.max(0.05, ...outline.map(([x]) => Math.abs(x)));
+  const at = g.getAttribute('position');
+  for (let k = 0; k < at.count; k++) {
+    const u = at.getX(k) / span;
+    at.setZ(k, at.getZ(k) - 0.12 * span * u * u);
+  }
+  g.computeVertexNormals();
+  return g;
 }
 
 // The stroke's outline, flattened onto its drawing plane and given thickness,

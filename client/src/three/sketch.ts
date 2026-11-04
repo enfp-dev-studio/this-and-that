@@ -341,7 +341,7 @@ export class Sketch {
   settle() {
     for (const s of this.strokes) {
       const m = s.line.material as LineMaterial;
-      m.opacity = 0.45;
+      m.opacity = 0.35;
       m.depthTest = false;
       s.line.renderOrder = 3;
     }
